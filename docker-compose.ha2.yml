@@ -1,0 +1,195 @@
+version: "3.9"
+
+x-hc: &hc
+  interval: 10s
+  timeout: 5s
+  retries: 30
+  start_period: 20s
+
+services:
+  yts-proxy:
+    image: ${IMAGE_TRAEFIK}
+    command:
+      - "--api.dashboard=false"
+      - "--entrypoints.websecure.address=:443"
+      - "--providers.docker=true"
+      - "--serversTransport.insecureSkipVerify=true"
+      - "--log.level=INFO"
+    ports:
+      - "${TLS_PORT}:443"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./tls/certs/server.crt:/certs/server.crt:ro
+      - ./tls/certs/server.key:/certs/server.key:ro
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.default-secure.tls=true"
+      - "traefik.http.routers.default-secure.entrypoints=websecure"
+      - "traefik.http.routers.default-secure.rule=HostRegexp(`{any:.*}`)"
+      - "traefik.http.routers.default-secure.tls.certificates[0].certFile=/certs/server.crt"
+      - "traefik.http.routers.default-secure.tls.certificates[0].keyFile=/certs/server.key"
+    restart: unless-stopped
+
+  yts-keycloak:
+    image: ${IMAGE_KEYCLOAK}
+    command: ["start-dev", "--http-port=8080"]
+    environment:
+      KEYCLOAK_ADMIN: ${KC_ADMIN}
+      KEYCLOAK_ADMIN_PASSWORD: ${KC_ADMIN_PWD}
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://${PG_HOST}:${PG_PORT}/${PG_DB_KEYCLOAK}
+      KC_DB_USERNAME: ${PG_USER_KEYCLOAK}
+      KC_DB_PASSWORD: ${PG_PWD_KEYCLOAK}
+      KC_PROXY: edge
+      KC_HOSTNAME: https://${HOST_SSO}
+    depends_on:
+  yts-minio:
+    image: ${IMAGE_MINIO}
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      MINIO_REGION_NAME: ${S3_REGION}
+      MINIO_SERVER_URL: https://${HOST_MINIO}
+    volumes:
+      - ./data/minio:/data
+    healthcheck:
+      test: ["CMD","curl","-fsS","http://localhost:9000/minio/health/live"]
+      <<: *hc
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.yts-minio-console.rule=Host(`${HOST_MINIO}`) && PathPrefix(`/`)"
+      - "traefik.http.routers.yts-minio-console.entrypoints=websecure"
+      - "traefik.http.routers.yts-minio-console.tls=true"
+      - "traefik.http.services.yts-minio-console.loadbalancer.server.port=9001"
+      - "traefik.http.routers.yts-minio-api.rule=Host(`${HOST_MINIO}`) && PathPrefix(`/s3`)"
+      - "traefik.http.routers.yts-minio-api.entrypoints=websecure"
+      - "traefik.http.routers.yts-minio-api.tls=true"
+      - "traefik.http.services.yts-minio-api.loadbalancer.server.port=9000"
+      - "traefik.http.middlewares.yts-strip-s3.stripprefixregex.regex=/s3"
+      - "traefik.http.routers.yts-minio-api.middlewares=yts-strip-s3@docker"
+    restart: unless-stopped
+
+  yts-minio-init:
+    image: ${IMAGE_MINIO_MC}
+    depends_on:
+      yts-minio:
+        condition: service_healthy
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      S3_BUCKET: ${S3_BUCKET}
+    entrypoint: ["/bin/sh","-c","/init.sh"]
+    volumes:
+      - ./minio/init.sh:/init.sh:ro
+    restart: "no"
+
+  yts-metastore:
+    image: ${IMAGE_HIVE}
+    depends_on:
+  yts-trino:
+    image: ${IMAGE_TRINO}
+    depends_on:
+      yts-metastore:
+        condition: service_started
+      yts-minio:
+        condition: service_started
+    volumes:
+      - ./trino/catalog:/etc/trino/catalog
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    healthcheck:
+      test: ["CMD","wget","-qO-","http://localhost:8080/v1/info"]
+      <<: *hc
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.yts-trino.rule=Host(`${HOST_TRINO}`)"
+      - "traefik.http.routers.yts-trino.entrypoints=websecure"
+      - "traefik.http.routers.yts-trino.tls=true"
+      - "traefik.http.services.yts-trino.loadbalancer.server.port=8080"
+    restart: unless-stopped
+
+  yts-airbyte-server:
+    image: ${IMAGE_AIRBYTE_SERVER}
+    environment:
+      AIRBYTE_ROLE: server
+      DATABASE_URL: jdbc:postgresql://${PG_HOST}:${PG_PORT}/${PG_DB_AIRBYTE}?sslmode=disable
+      DATABASE_USER: ${PG_USER_AIRBYTE}
+      DATABASE_PASSWORD: ${PG_PWD_AIRBYTE}
+      TEMPORAL_HOST: yts-airbyte-temporal:7233
+      INTERNAL_API_HOST: http://yts-airbyte-server:8001/
+      WORKLOAD_API_HOST: http://yts-airbyte-server:8001/
+      WEBAPP_URL: https://${HOST_AIRBYTE}
+      WORKSPACE_ROOT: /data/airbyte/workspace
+      AIRBYTE_CLOUD_STORAGE_TYPE: S3
+      AIRBYTE_CLOUD_STORAGE_BUCKET_LOG: ${S3_BUCKET}
+      AIRBYTE_CLOUD_STORAGE_BUCKET_STATE: ${S3_BUCKET}
+      AIRBYTE_CLOUD_STORAGE_BUCKET_WORKLOAD_OUTPUT: ${S3_BUCKET}
+      AIRBYTE_CLOUD_STORAGE_BUCKET_ACTIVITY_PAYLOAD: ${S3_BUCKET}
+      AIRBYTE_CLOUD_STORAGE_BUCKET_AUDIT_LOGGING: ${S3_BUCKET}
+      AIRBYTE_CLOUD_STORAGE_BUCKET_PROFILER_OUTPUT: ${S3_BUCKET}
+      AIRBYTE_CLOUD_STORAGE_S3_ACCESS_KEY: ${MINIO_ROOT_USER}
+      AIRBYTE_CLOUD_STORAGE_S3_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD}
+      AIRBYTE_CLOUD_STORAGE_S3_REGION: ${S3_REGION}
+      AIRBYTE_CLOUD_STORAGE_S3_ENDPOINT: http://yts-minio:9000
+      AIRBYTE_CLOUD_STORAGE_S3_PATH_STYLE_ACCESS: "true"
+    volumes:
+      - ./airbyte/workspace:/data/airbyte/workspace
+    depends_on:
+  yts-airbyte-worker:
+    image: ${IMAGE_AIRBYTE_WORKER}
+    environment:
+      AIRBYTE_ROLE: worker
+      DATABASE_URL: jdbc:postgresql://${PG_HOST}:${PG_PORT}/${PG_DB_AIRBYTE}?sslmode=disable
+      DATABASE_USER: ${PG_USER_AIRBYTE}
+      DATABASE_PASSWORD: ${PG_PWD_AIRBYTE}
+      TEMPORAL_HOST: yts-airbyte-temporal:7233
+      INTERNAL_API_HOST: http://yts-airbyte-server:8001/
+      WORKLOAD_API_HOST: http://yts-airbyte-server:8001/
+      WORKSPACE_ROOT: /data/airbyte/workspace
+      AIRBYTE_CLOUD_STORAGE_TYPE: S3
+      AIRBYTE_CLOUD_STORAGE_BUCKET_LOG: ${S3_BUCKET}
+      AIRBYTE_CLOUD_STORAGE_BUCKET_STATE: ${S3_BUCKET}
+      AIRBYTE_CLOUD_STORAGE_BUCKET_WORKLOAD_OUTPUT: ${S3_BUCKET}
+      AIRBYTE_CLOUD_STORAGE_BUCKET_ACTIVITY_PAYLOAD: ${S3_BUCKET}
+      AIRBYTE_CLOUD_STORAGE_BUCKET_AUDIT_LOGGING: ${S3_BUCKET}
+      AIRBYTE_CLOUD_STORAGE_BUCKET_PROFILER_OUTPUT: ${S3_BUCKET}
+      AIRBYTE_CLOUD_STORAGE_S3_ACCESS_KEY: ${MINIO_ROOT_USER}
+      AIRBYTE_CLOUD_STORAGE_S3_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD}
+      AIRBYTE_CLOUD_STORAGE_S3_REGION: ${S3_REGION}
+      AIRBYTE_CLOUD_STORAGE_S3_ENDPOINT: http://yts-minio:9000
+      AIRBYTE_CLOUD_STORAGE_S3_PATH_STYLE_ACCESS: "true"
+    volumes:
+      - ./airbyte/workspace:/data/airbyte/workspace
+    depends_on:
+      yts-airbyte-server:
+        condition: service_started
+  yts-airbyte-temporal:
+    image: ${IMAGE_TEMPORAL}
+    environment:
+      DB: postgresql
+      POSTGRES_USER: ${PG_USER_TEMPORAL}
+      POSTGRES_PWD: ${PG_PWD_TEMPORAL}
+      POSTGRES_SEEDS: ${PG_HOST}
+      POSTGRES_PORT: ${PG_PORT}
+      POSTGRES_DB: ${PG_DB_TEMPORAL}
+    depends_on:
+  yts-om-es:
+    image: ${IMAGE_ELASTICSEARCH}
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+    volumes:
+      - ./openmetadata/es:/usr/share/elasticsearch/data
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          curl -fsS http://localhost:9200/_cluster/health | grep -Eq '"status":"(yellow|green)"'
+      <<: *hc
+    restart: unless-stopped
+
+  yts-openmetadata-server:
+    image: ${IMAGE_OPENMETADATA}
+    depends_on:
