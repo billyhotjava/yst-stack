@@ -11,13 +11,39 @@ load_img_versions(){ conf="imgversion.conf"; [[ -f "$conf" ]] || return 0; while
 
 prepare_data_dirs(){
   if [[ "${PG_MODE}" == "embedded" ]]; then
-    mkdir -p postgres/init postgres/data
-    chmod -R 777 postgres/data
+    mkdir -p services/yts-pg/data
+    chmod -R 777 services/yts-pg/data || true
   fi
-  mkdir -p data/minio airbyte/workspace openmetadata/es openmetadata/es/certs observability/loki observability/prometheus-data observability/grafana
-  chmod -R 777 data/minio airbyte/workspace || true
-  chmod -R 777 openmetadata/es || true
-  chmod -R 777 observability/loki observability/prometheus-data observability/grafana || true
+
+  local -a data_dirs=(
+    "services/yts-proxy/data/certs"
+    "services/yts-minio/data"
+    "services/yts-minio-init/data"
+    "services/yts-airbyte-server/data/workspace"
+    "services/yts-airbyte-worker/data"
+    "services/yts-airbyte-temporal/data"
+    "services/yts-om-es/data"
+    "services/yts-om-es/data/certs"
+    "services/yts-openmetadata-server/data"
+    "services/yts-llm/data"
+    "services/yts-ai-gateway/data"
+    "services/yts-dtadminui/data"
+    "services/yts-dtadmin/data"
+    "services/yts-loki/data"
+    "services/yts-promtail/data"
+    "services/yts-prometheus/data"
+    "services/yts-grafana/data"
+    "services/yts-cadvisor/data"
+  )
+
+  local dir
+  for dir in "${data_dirs[@]}"; do
+    mkdir -p "${dir}"
+  done
+
+  chmod -R 777 services/yts-minio/data services/yts-airbyte-server/data || true
+  chmod -R 777 services/yts-om-es/data || true
+  chmod -R 777 services/yts-loki/data services/yts-prometheus/data services/yts-grafana/data || true
 }
 
 generate_env_base(){
@@ -162,23 +188,7 @@ GRAFANA_ADMIN_USER=${GRAFANA_ADMIN_USER}
 GRAFANA_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD}
 EOF
 }
-write_pg_init_sql(){
-  set -a
-  source .env
-  set +a
-  cat > postgres/init/10-init-users.sql <<SQL
-ALTER SYSTEM SET password_encryption = 'scram-sha-256';
-SELECT pg_reload_conf();
-DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='${PG_USER_KEYCLOAK}') THEN CREATE ROLE ${PG_USER_KEYCLOAK} LOGIN PASSWORD '${PG_PWD_KEYCLOAK}'; ELSE ALTER ROLE ${PG_USER_KEYCLOAK} WITH LOGIN PASSWORD '${PG_PWD_KEYCLOAK}'; END IF; END $$;
-DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_database WHERE datname='${PG_DB_KEYCLOAK}') THEN CREATE DATABASE ${PG_DB_KEYCLOAK} OWNER ${PG_USER_KEYCLOAK}; ELSE ALTER DATABASE ${PG_DB_KEYCLOAK} OWNER TO ${PG_USER_KEYCLOAK}; END IF; END $$;
-DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='${PG_USER_AIRBYTE}') THEN CREATE ROLE ${PG_USER_AIRBYTE} LOGIN PASSWORD '${PG_PWD_AIRBYTE}'; ELSE ALTER ROLE ${PG_USER_AIRBYTE} WITH LOGIN PASSWORD '${PG_PWD_AIRBYTE}'; END IF; END $$;
-DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_database WHERE datname='${PG_DB_AIRBYTE}') THEN CREATE DATABASE ${PG_DB_AIRBYTE} OWNER ${PG_USER_AIRBYTE}; ELSE ALTER DATABASE ${PG_DB_AIRBYTE} OWNER TO ${PG_USER_AIRBYTE}; END IF; END $$;
-DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='${PG_USER_OM}') THEN CREATE ROLE ${PG_USER_OM} LOGIN PASSWORD '${PG_PWD_OM}'; ELSE ALTER ROLE ${PG_USER_OM} WITH LOGIN PASSWORD '${PG_PWD_OM}'; END IF; END $$;
-DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_database WHERE datname='${PG_DB_OM}') THEN CREATE DATABASE ${PG_DB_OM} OWNER ${PG_USER_OM}; ELSE ALTER DATABASE ${PG_DB_OM} OWNER TO ${PG_USER_OM}; END IF; END $$;
-DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='${PG_USER_TEMPORAL}') THEN CREATE ROLE ${PG_USER_TEMPORAL} LOGIN PASSWORD '${PG_PWD_TEMPORAL}'; ELSE ALTER ROLE ${PG_USER_TEMPORAL} WITH LOGIN PASSWORD '${PG_PWD_TEMPORAL}'; END IF; END $$;
-DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_database WHERE datname='${PG_DB_TEMPORAL}') THEN CREATE DATABASE ${PG_DB_TEMPORAL} OWNER ${PG_USER_TEMPORAL}; ELSE ALTER DATABASE ${PG_DB_TEMPORAL} OWNER TO ${PG_USER_TEMPORAL}; END IF; END $$;
-SQL
-}
+
 if [[ -z "${MODE}" ]]; then pick_mode; else case "$MODE" in single|ha2|cluster) ;; *) usage; exit 1;; esac; fi
 if [[ -z "${SECRET}" ]]; then read_secret; else [[ ${#SECRET} -ge 10 && "$SECRET" =~ [A-Z] && "$SECRET" =~ [a-z] && "$SECRET" =~ [0-9] && "$SECRET" =~ [^A-Za-z0-9] ]] || { echo "Weak password"; exit 1; } fi
 COMPOSE_FILE="docker-compose.yml"; PG_HOST="yts-pg"; PG_MODE="embedded"
@@ -204,8 +214,8 @@ fi
 if [[ "${ELASTICSEARCH_HTTP_SSL_ENABLED}" == "true" ]]; then
   missing_cert=0
   for cert_file in http.key http.crt ca.crt; do
-    if [[ ! -f "openmetadata/es/certs/${cert_file}" ]]; then
-      echo "[start.sh] ERROR: Missing openmetadata/es/certs/${cert_file} required when Elasticsearch TLS is enabled." >&2
+    if [[ ! -f "services/yts-om-es/data/certs/${cert_file}" ]]; then
+      echo "[start.sh] ERROR: Missing services/yts-om-es/data/certs/${cert_file} required when Elasticsearch TLS is enabled." >&2
       missing_cert=1
     fi
   done
@@ -213,58 +223,14 @@ if [[ "${ELASTICSEARCH_HTTP_SSL_ENABLED}" == "true" ]]; then
     exit 1
   fi
 fi
-mkdir -p tls
-cat > tls/gen-certs.sh <<'SH'
-#!/usr/bin/env bash
-set -e
-mkdir -p tls/certs
-BASE_DOMAIN="${BASE_DOMAIN:-yts.local}"
-if [[ -f tls/certs/server.crt && -f tls/certs/server.key ]]; then
-  echo "[tls] cert exists, skip."
-  exit 0
-fi
-openssl req -x509 -newkey rsa:2048 -days 3650 -nodes   -keyout tls/certs/server.key -out tls/certs/server.crt   -subj "/CN=*.${BASE_DOMAIN}/O=YTS"   -addext "subjectAltName=DNS:*.${BASE_DOMAIN},DNS:${BASE_DOMAIN}"
-echo "[tls] generated tls/certs/server.crt & server.key"
-SH
-chmod +x tls/gen-certs.sh
 if [[ "${MODE}" == "single" ]]; then
-  bash tls/gen-certs.sh || true
+  BASE_DOMAIN="${BASE_DOMAIN}" bash services/yts-proxy/init/gen-certs.sh || true
 else
-  if [[ ! -f tls/certs/server.crt || ! -f tls/certs/server.key ]]; then
-    echo "[start.sh] ERROR: Production mode requires a CA-issued TLS certificate at tls/certs/server.crt and tls/certs/server.key." >&2
+  if [[ ! -f services/yts-proxy/data/certs/server.crt || ! -f services/yts-proxy/data/certs/server.key ]]; then
+    echo "[start.sh] ERROR: Production mode requires a CA-issued TLS certificate at services/yts-proxy/data/certs/server.crt and services/yts-proxy/data/certs/server.key." >&2
     exit 1
   fi
 fi
-[[ "${PG_MODE}" == "embedded" ]] && write_pg_init_sql
-if [[ ! -x "minio/init.sh" ]]; then
-  mkdir -p minio
-  cat > minio/init.sh <<'SH'
-#!/bin/sh
-set -e
-mc alias set local http://yts-minio:9000 "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD" >/dev/null
-if mc ls "local/${S3_BUCKET}" >/dev/null 2>&1; then
-  echo "Bucket ${S3_BUCKET} already exists"
-else
-  echo "Creating bucket ${S3_BUCKET} ..."
-  mc mb "local/${S3_BUCKET}"
-fi
-mc anonymous set download "local/${S3_BUCKET}" >/dev/null 2>&1 || true
-echo "MinIO init done"
-SH
-  chmod +x minio/init.sh
-fi
-mkdir -p trino/catalog
-[[ -f trino/catalog/hive.properties ]] || cat > trino/catalog/hive.properties <<'PROPS'
-connector.name=hive
-hive.metastore.uri=thrift://yts-metastore:9083
-hive.s3.endpoint=http://yts-minio:9000
-hive.s3.path-style-access=true
-hive.s3.aws-access-key=${env:MINIO_ROOT_USER}
-hive.s3.aws-secret-key=${env:MINIO_ROOT_PASSWORD}
-hive.s3.ssl.enabled=false
-hive.non-managed-table-writes-enabled=true
-hive.storage-format=ORC
-PROPS
 echo "[start.sh] Starting with ${COMPOSE_FILE} ..."
 if docker compose version >/dev/null 2>&1; then docker compose -f "${COMPOSE_FILE}" up -d
 elif command -v docker-compose >/dev/null 2>&1; then docker-compose -f "${COMPOSE_FILE}" up -d

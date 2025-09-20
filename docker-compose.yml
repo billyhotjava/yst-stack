@@ -27,8 +27,8 @@ services:
       - "127.0.0.1:${TRAEFIK_METRICS_PORT}:${TRAEFIK_METRICS_PORT}"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
-      - ./tls/certs/server.crt:/certs/server.crt:ro
-      - ./tls/certs/server.key:/certs/server.key:ro
+      - ./services/yts-proxy/data/certs/server.crt:/certs/server.crt:ro
+      - ./services/yts-proxy/data/certs/server.key:/certs/server.key:ro
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.default-secure.tls=true"
@@ -46,9 +46,21 @@ services:
       POSTGRES_PASSWORD: ${PG_SUPER_PASSWORD}
       POSTGRES_USER: ${PG_SUPER_USER}
       PGDATA: /var/lib/postgresql/data/pgdata
+      PG_DB_KEYCLOAK: ${PG_DB_KEYCLOAK}
+      PG_USER_KEYCLOAK: ${PG_USER_KEYCLOAK}
+      PG_PWD_KEYCLOAK: ${PG_PWD_KEYCLOAK}
+      PG_DB_AIRBYTE: ${PG_DB_AIRBYTE}
+      PG_USER_AIRBYTE: ${PG_USER_AIRBYTE}
+      PG_PWD_AIRBYTE: ${PG_PWD_AIRBYTE}
+      PG_DB_OM: ${PG_DB_OM}
+      PG_USER_OM: ${PG_USER_OM}
+      PG_PWD_OM: ${PG_PWD_OM}
+      PG_DB_TEMPORAL: ${PG_DB_TEMPORAL}
+      PG_USER_TEMPORAL: ${PG_USER_TEMPORAL}
+      PG_PWD_TEMPORAL: ${PG_PWD_TEMPORAL}
     volumes:
-      - ./postgres/data:/var/lib/postgresql/data
-      - ./postgres/init:/docker-entrypoint-initdb.d
+      - ./services/yts-pg/data:/var/lib/postgresql/data
+      - ./services/yts-pg/init:/docker-entrypoint-initdb.d
     healthcheck:
       test: ["CMD-SHELL","pg_isready -U ${PG_SUPER_USER} -d postgres"]
       <<: *hc
@@ -90,7 +102,7 @@ services:
       MINIO_REGION_NAME: ${S3_REGION}
       MINIO_SERVER_URL: https://${HOST_MINIO}
     volumes:
-      - ./data/minio:/data
+      - ./services/yts-minio/data:/data
     healthcheck:
       test: ["CMD","curl","-fsS","http://localhost:9000/minio/health/live"]
       <<: *hc
@@ -121,7 +133,7 @@ services:
       S3_BUCKET: ${S3_BUCKET}
     entrypoint: ["/bin/sh","-c","/init.sh"]
     volumes:
-      - ./minio/init.sh:/init.sh:ro
+      - ./services/yts-minio-init/init/init.sh:/init.sh:ro
     restart: "no"
     networks:
       - yts-core
@@ -154,7 +166,7 @@ services:
       yts-minio:
         condition: service_started
     volumes:
-      - ./trino/catalog:/etc/trino/catalog
+      - ./services/yts-trino/init/catalog:/etc/trino/catalog
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
@@ -196,7 +208,7 @@ services:
       AIRBYTE_CLOUD_STORAGE_S3_ENDPOINT: http://yts-minio:9000
       AIRBYTE_CLOUD_STORAGE_S3_PATH_STYLE_ACCESS: "true"
     volumes:
-      - ./airbyte/workspace:/data/airbyte/workspace
+      - ./services/yts-airbyte-server/data/workspace:/data/airbyte/workspace
     depends_on:
       yts-pg:
         condition: service_healthy
@@ -240,7 +252,7 @@ services:
       AIRBYTE_CLOUD_STORAGE_S3_ENDPOINT: http://yts-minio:9000
       AIRBYTE_CLOUD_STORAGE_S3_PATH_STYLE_ACCESS: "true"
     volumes:
-      - ./airbyte/workspace:/data/airbyte/workspace
+      - ./services/yts-airbyte-server/data/workspace:/data/airbyte/workspace
     depends_on:
       yts-airbyte-server:
         condition: service_started
@@ -283,8 +295,8 @@ services:
       - ELASTIC_PASSWORD=${ELASTIC_PASSWORD}
       - ELASTIC_USERNAME=${ELASTICSEARCH_USERNAME}
     volumes:
-      - ./openmetadata/es:/usr/share/elasticsearch/data
-      - ./openmetadata/es/certs:/usr/share/elasticsearch/config/certs:ro
+      - ./services/yts-om-es/data:/usr/share/elasticsearch/data
+      - ./services/yts-om-es/data/certs:/usr/share/elasticsearch/config/certs:ro
     healthcheck:
       test:
         - CMD-SHELL
@@ -329,7 +341,7 @@ services:
       ELASTICSEARCH_VERIFY_CERTIFICATE: ${ELASTICSEARCH_VERIFY_CERTIFICATE}
       ELASTICSEARCH_SSL_CERT: ${OPENMETADATA_ELASTICSEARCH_CA}
     volumes:
-      - ./openmetadata/es/certs:/opt/openmetadata/certs:ro
+      - ./services/yts-om-es/data/certs:/opt/openmetadata/certs:ro
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.yts-om.rule=Host(`${HOST_META}`)"
@@ -346,7 +358,7 @@ services:
       OLLAMA_NUM_PARALLEL: ${OLLAMA_NUM_PARALLEL}
       OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE}
     volumes:
-      - ./models:/root/.ollama:rw
+      - ./services/yts-llm/data:/root/.ollama:rw
     entrypoint: ["/bin/sh","-c"]
     command: >
       "ollama serve & 
@@ -420,8 +432,8 @@ services:
     ports:
       - "127.0.0.1:3100:3100"
     volumes:
-      - ./observability/loki-config.yml:/etc/loki/config.yml:ro
-      - ./observability/loki:/loki
+      - ./services/yts-loki/init/config.yml:/etc/loki/config.yml:ro
+      - ./services/yts-loki/data:/loki
     restart: unless-stopped
     networks:
       - yts-core
@@ -436,7 +448,7 @@ services:
         condition: service_started
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
-      - ./observability/promtail-config.yml:/etc/promtail/config.yml:ro
+      - ./services/yts-promtail/init/config.yml:/etc/promtail/config.yml:ro
     restart: unless-stopped
     networks:
       - yts-core
@@ -449,8 +461,8 @@ services:
       - "--config.file=/etc/prometheus/prometheus.yml"
       - "--storage.tsdb.path=/prometheus"
     volumes:
-      - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
-      - ./observability/prometheus-data:/prometheus
+      - ./services/yts-prometheus/init/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./services/yts-prometheus/data:/prometheus
     restart: unless-stopped
     networks:
       - yts-core
@@ -465,7 +477,7 @@ services:
     ports:
       - "127.0.0.1:3001:3000"
     volumes:
-      - ./observability/grafana:/var/lib/grafana
+      - ./services/yts-grafana/data:/var/lib/grafana
     restart: unless-stopped
     networks:
       - yts-core
