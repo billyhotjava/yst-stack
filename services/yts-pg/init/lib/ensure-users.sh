@@ -40,18 +40,25 @@ BEGIN
 END
 \$do$;
 
-DO \$do$
-DECLARE
-  role_name text := '${role_literal}';
-  db_name text := '${db_literal}';
-BEGIN
-  IF NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = db_name) THEN
-    EXECUTE format('CREATE DATABASE %I OWNER %I', db_name, role_name);
-  ELSE
-    EXECUTE format('ALTER DATABASE %I OWNER TO %I', db_name, role_name);
-  END IF;
-END
-\$do$;
+SQL
+
+  "${psql[@]}" <<SQL
+SELECT format(
+  'CREATE DATABASE %s OWNER %s',
+  quote_ident('${db_literal}'),
+  quote_ident('${role_literal}')
+)
+WHERE NOT EXISTS (
+  SELECT 1 FROM pg_database WHERE datname = '${db_literal}'
+)
+\gexec
+
+SELECT format(
+  'ALTER DATABASE %s OWNER TO %s',
+  quote_ident('${db_literal}'),
+  quote_ident('${role_literal}')
+)
+\gexec
 SQL
 }
 
@@ -60,4 +67,5 @@ ensure_pg_roles() {
   ensure_pg_role_and_db "${PG_USER_AIRBYTE-}" "${PG_PWD_AIRBYTE-}" "${PG_DB_AIRBYTE-}"
   ensure_pg_role_and_db "${PG_USER_OM-}" "${PG_PWD_OM-}" "${PG_DB_OM-}"
   ensure_pg_role_and_db "${PG_USER_TEMPORAL-}" "${PG_PWD_TEMPORAL-}" "${PG_DB_TEMPORAL-}"
+  ensure_pg_role_and_db "${PG_USER_TEMPORAL-}" "${PG_PWD_TEMPORAL-}" "${PG_DB_TEMPORAL_VISIBILITY-}"
 }

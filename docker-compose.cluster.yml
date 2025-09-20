@@ -26,8 +26,8 @@ services:
       - "traefik.http.routers.default-secure.tls=true"
       - "traefik.http.routers.default-secure.entrypoints=websecure"
       - "traefik.http.routers.default-secure.rule=HostRegexp(`{any:.*}`)"
-      - "traefik.http.routers.default-secure.tls.certificates[0].certFile=/certs/server.crt"
-      - "traefik.http.routers.default-secure.tls.certificates[0].keyFile=/certs/server.key"
+      - "traefik.http.tls.certificates[0].certFile=/certs/server.crt"
+      - "traefik.http.tls.certificates[0].keyFile=/certs/server.key"
     restart: unless-stopped
 
   yts-keycloak:
@@ -61,10 +61,12 @@ services:
       - "traefik.http.routers.yts-minio-console.rule=Host(`${HOST_MINIO}`) && PathPrefix(`/`)"
       - "traefik.http.routers.yts-minio-console.entrypoints=websecure"
       - "traefik.http.routers.yts-minio-console.tls=true"
+      - "traefik.http.routers.yts-minio-console.service=yts-minio-console"
       - "traefik.http.services.yts-minio-console.loadbalancer.server.port=9001"
       - "traefik.http.routers.yts-minio-api.rule=Host(`${HOST_MINIO}`) && PathPrefix(`/s3`)"
       - "traefik.http.routers.yts-minio-api.entrypoints=websecure"
       - "traefik.http.routers.yts-minio-api.tls=true"
+      - "traefik.http.routers.yts-minio-api.service=yts-minio-api"
       - "traefik.http.services.yts-minio-api.loadbalancer.server.port=9000"
       - "traefik.http.middlewares.yts-strip-s3.stripprefixregex.regex=/s3"
       - "traefik.http.routers.yts-minio-api.middlewares=yts-strip-s3@docker"
@@ -134,6 +136,7 @@ services:
       AIRBYTE_CLOUD_STORAGE_S3_REGION: ${S3_REGION}
       AIRBYTE_CLOUD_STORAGE_S3_ENDPOINT: http://yts-minio:9000
       AIRBYTE_CLOUD_STORAGE_S3_PATH_STYLE_ACCESS: "true"
+      AIRBYTE_SECRET_PERSISTENCE: database
     volumes:
       - ./services/yts-airbyte-server/data/workspace:/data/airbyte/workspace
     depends_on:
@@ -160,6 +163,7 @@ services:
       AIRBYTE_CLOUD_STORAGE_S3_REGION: ${S3_REGION}
       AIRBYTE_CLOUD_STORAGE_S3_ENDPOINT: http://yts-minio:9000
       AIRBYTE_CLOUD_STORAGE_S3_PATH_STYLE_ACCESS: "true"
+      AIRBYTE_SECRET_PERSISTENCE: database
     volumes:
       - ./services/yts-airbyte-server/data/workspace:/data/airbyte/workspace
     depends_on:
@@ -168,7 +172,11 @@ services:
   yts-airbyte-temporal:
     image: ${IMAGE_TEMPORAL}
     environment:
-      DB: postgresql
+      DB: postgres12_pgx
+      DB_PORT: ${PG_PORT}
+      DBNAME: ${PG_DB_TEMPORAL}
+      VISIBILITY_DBNAME: ${PG_DB_TEMPORAL_VISIBILITY}
+      SKIP_DB_CREATE: "true"
       POSTGRES_USER: ${PG_USER_TEMPORAL}
       POSTGRES_PWD: ${PG_PWD_TEMPORAL}
       POSTGRES_SEEDS: ${PG_HOST}

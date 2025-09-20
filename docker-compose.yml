@@ -34,8 +34,8 @@ services:
       - "traefik.http.routers.default-secure.tls=true"
       - "traefik.http.routers.default-secure.entrypoints=websecure"
       - "traefik.http.routers.default-secure.rule=HostRegexp(`{any:.*}`)"
-      - "traefik.http.routers.default-secure.tls.certificates[0].certFile=/certs/server.crt"
-      - "traefik.http.routers.default-secure.tls.certificates[0].keyFile=/certs/server.key"
+      - "traefik.http.tls.certificates[0].certFile=/certs/server.crt"
+      - "traefik.http.tls.certificates[0].keyFile=/certs/server.key"
     restart: unless-stopped
     networks:
       - yts-core
@@ -111,10 +111,12 @@ services:
       - "traefik.http.routers.yts-minio-console.rule=Host(`${HOST_MINIO}`) && PathPrefix(`/`)"
       - "traefik.http.routers.yts-minio-console.entrypoints=websecure"
       - "traefik.http.routers.yts-minio-console.tls=true"
+      - "traefik.http.routers.yts-minio-console.service=yts-minio-console"
       - "traefik.http.services.yts-minio-console.loadbalancer.server.port=9001"
       - "traefik.http.routers.yts-minio-api.rule=Host(`${HOST_MINIO}`) && PathPrefix(`/s3`)"
       - "traefik.http.routers.yts-minio-api.entrypoints=websecure"
       - "traefik.http.routers.yts-minio-api.tls=true"
+      - "traefik.http.routers.yts-minio-api.service=yts-minio-api"
       - "traefik.http.services.yts-minio-api.loadbalancer.server.port=9000"
       - "traefik.http.middlewares.yts-strip-s3.stripprefixregex.regex=/s3"
       - "traefik.http.routers.yts-minio-api.middlewares=yts-strip-s3@docker"
@@ -207,6 +209,7 @@ services:
       AIRBYTE_CLOUD_STORAGE_S3_REGION: ${S3_REGION}
       AIRBYTE_CLOUD_STORAGE_S3_ENDPOINT: http://yts-minio:9000
       AIRBYTE_CLOUD_STORAGE_S3_PATH_STYLE_ACCESS: "true"
+      AIRBYTE_SECRET_PERSISTENCE: database
     volumes:
       - ./services/yts-airbyte-server/data/workspace:/data/airbyte/workspace
     depends_on:
@@ -251,6 +254,7 @@ services:
       AIRBYTE_CLOUD_STORAGE_S3_REGION: ${S3_REGION}
       AIRBYTE_CLOUD_STORAGE_S3_ENDPOINT: http://yts-minio:9000
       AIRBYTE_CLOUD_STORAGE_S3_PATH_STYLE_ACCESS: "true"
+      AIRBYTE_SECRET_PERSISTENCE: database
     volumes:
       - ./services/yts-airbyte-server/data/workspace:/data/airbyte/workspace
     depends_on:
@@ -268,6 +272,10 @@ services:
     image: ${IMAGE_TEMPORAL}
     environment:
       DB: postgres12_pgx
+      DB_PORT: ${PG_PORT}
+      DBNAME: ${PG_DB_TEMPORAL}
+      VISIBILITY_DBNAME: ${PG_DB_TEMPORAL_VISIBILITY}
+      SKIP_DB_CREATE: "true"
       POSTGRES_USER: ${PG_USER_TEMPORAL}
       POSTGRES_PWD: ${PG_PWD_TEMPORAL}
       POSTGRES_SEEDS: ${PG_HOST}
@@ -352,151 +360,238 @@ services:
     networks:
       - yts-core
 
-  yts-llm:
-    image: ${IMAGE_OLLAMA}
-    environment:
-      OLLAMA_NUM_PARALLEL: ${OLLAMA_NUM_PARALLEL}
-      OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE}
-    volumes:
-      - ./services/yts-llm/data:/root/.ollama:rw
-    entrypoint: ["/bin/sh","-c"]
-    command: >
-      "ollama serve & 
-       sleep 3 && 
-       ollama pull ${OLLAMA_MODEL} || true && 
-       tail -f /dev/null"
-    labels:
-      - "traefik.enable=true"
-      - "traefik.http.routers.yts-llm.rule=Host(`${HOST_AI}`)"
-      - "traefik.http.routers.yts-llm.entrypoints=websecure"
-      - "traefik.http.routers.yts-llm.tls=true"
-      - "traefik.http.services.yts-llm.loadbalancer.server.port=11434"
-    restart: unless-stopped
-    networks:
-      - yts-core
+  # yts-llm:
+  #   image: ${IMAGE_OLLAMA}
+  #   environment:
+  #     OLLAMA_NUM_PARALLEL: ${OLLAMA_NUM_PARALLEL}
+  #     OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE}
+  #   volumes:
+  #     - ./services/yts-llm/data:/root/.ollama:rw
+  #   entrypoint: ["/bin/sh","-c"]
+  #   command: >
+  #     "ollama serve & 
+  #      sleep 3 && 
+  #      ollama pull ${OLLAMA_MODEL} || true && 
+  #      tail -f /dev/null"
+  #   labels:
+  #     - "traefik.enable=true"
+  #     - "traefik.http.routers.yts-llm.rule=Host(`${HOST_AI}`)"
+  #     - "traefik.http.routers.yts-llm.entrypoints=websecure"
+  #     - "traefik.http.routers.yts-llm.tls=true"
+  #     - "traefik.http.services.yts-llm.loadbalancer.server.port=11434"
+  #   restart: unless-stopped
+  #   networks:
+  #     - yts-core
 
-  yts-ai-gateway:
-    image: yts-ai-gateway:latest
-    environment:
-      LLM_BASE_URL: http://yts-llm:11434
-      READONLY_MODE: "true"
-      DEFAULT_QUERY_LIMIT: "1000"
-      OIDC_ISSUER: https://${HOST_SSO}
-    depends_on:
-      yts-llm:
-        condition: service_started
-    labels:
-      - "traefik.enable=true"
-      - "traefik.http.routers.yts-aigw.rule=Host(`${HOST_ASSIST}`)"
-      - "traefik.http.routers.yts-aigw.entrypoints=websecure"
-      - "traefik.http.routers.yts-aigw.tls=true"
-      - "traefik.http.services.yts-aigw.loadbalancer.server.port=7080"
-    restart: unless-stopped
-    networks:
-      - yts-core
+  # yts-ai-gateway:
+  #   image: yts-ai-gateway:latest
+  #   environment:
+  #     LLM_BASE_URL: http://yts-llm:11434
+  #     READONLY_MODE: "true"
+  #     DEFAULT_QUERY_LIMIT: "1000"
+  #     OIDC_ISSUER: https://${HOST_SSO}
+  #   depends_on:
+  #     yts-llm:
+  #       condition: service_started
+  #   labels:
+  #     - "traefik.enable=true"
+  #     - "traefik.http.routers.yts-aigw.rule=Host(`${HOST_ASSIST}`)"
+  #     - "traefik.http.routers.yts-aigw.entrypoints=websecure"
+  #     - "traefik.http.routers.yts-aigw.tls=true"
+  #     - "traefik.http.services.yts-aigw.loadbalancer.server.port=7080"
+  #   restart: unless-stopped
+  #   networks:
+  #     - yts-core
 
   yts-dtadminui:
-    image: yts-dtadminui:latest
+    image: node:20-alpine
+    container_name: yts-dtadminui
+    working_dir: /app
     environment:
+      # 你的前端需要的公开变量
       PUBLIC_BASE_URL: https://${HOST_PORTAL}
+      # 热更新在挂载卷/WSL上更稳定
+      CHOKIDAR_USEPOLLING: "1"
+      WATCHPACK_POLLING: "true"
+      BROWSER: "noneyts-adminui.loadbalancer.server.port"
+    volumes:
+      # 把源码目录换成你的实际路径
+      #- ./services/dtadmin-ui:/app
+      - /opt/prod/trendsense/source/dtadmin-ui:/app
+    command: >
+      sh -lc "
+        corepack enable || true;
+        if [ -f pnpm-lock.yaml ]; then corepack prepare pnpm@latest --activate; pnpm i;
+          pnpm dev --host 0.0.0.0 --port 3001;
+        elif [ -f yarn.lock ]; then yarn install --frozen-lockfile;
+          yarn dev --host 0.0.0.0 --port 3001;
+        else npm ci || npm i;
+          npm run dev -- --host 0.0.0.0 --port 3001;
+        fi"
     labels:
-      - "traefik.enable=true"
-      - "traefik.http.routers.yts-adminui.rule=Host(`${HOST_PORTAL}`)"
-      - "traefik.http.routers.yts-adminui.entrypoints=websecure"
-      - "traefik.http.routers.yts-adminui.tls=true"
-      - "traefik.http.services.yts-adminui.loadbalancer.server.port=3000"
+      - traefik.enable=true
+      - traefik.http.routers.yts-adminui.rule=Host(`${HOST_PORTAL}`)
+      - traefik.http.routers.yts-adminui.entrypoints=websecure
+      - traefik.http.routers.yts-adminui.tls=true
+      - traefik.http.services.yts-adminui.loadbalancer.server.port=3001
+      - traefik.http.services.yts-adminui.loadbalancer.passhostheader=false
     restart: unless-stopped
     networks:
       - yts-core
+
 
   yts-dtadmin:
-    image: yts-dtadmin:latest
+    image: ghcr.io/graalvm/graalvm-community:21
+    container_name: yts-dtadmin-api
+    working_dir: /app
     environment:
-      APP_EXTERNAL_URL: https://${HOST_ADMIN}
-      OIDC_ISSUER: https://${HOST_SSO}
+      SPRING_PROFILES_ACTIVE: dev
+      SERVER_PORT: ${DTADMIN_API_PORT}
+      # JHipster 常见端点
+      MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE: health,info,metrics,env,loggers,threaddump,configprops
+      # 数据库（举例：指向你全局 PG）
+      SPRING_DATASOURCE_URL: jdbc:postgresql://yts-pg:5432/${DTADMIN_DB_NAME}
+      SPRING_DATASOURCE_USERNAME: ${DTADMIN_DB_USER}
+      SPRING_DATASOURCE_PASSWORD: ${DTADMIN_DB_PASSWORD}
+      # 允许被反代：如有需要可放宽 CORS
+      # JHIPSTER_CORS_ALLOWED_ORIGINS: https://${HOST_PORTAL}
+    volumes:
+      - /opt/prod/trendsense/source/dtadmin:/app
+      # Gradle/Maven 缓存（可选，加快编译）
+      - gradle-cache:/root/.gradle
+      # - maven-cache:/root/.m2
+    command: >
+      sh -lc "
+        if [ -f gradlew ]; then chmod +x gradlew; ./gradlew -x test bootRun --args='--server.port=${DTADMIN_API_PORT}';
+        elif [ -f mvnw ]; then chmod +x mvnw; ./mvnw -DskipTests spring-boot:run -Dspring-boot.run.jvmArguments='-Dserver.port=${DTADMIN_API_PORT}';
+        else echo 'No Gradle/Maven wrapper found'; exit 1; fi"
+    healthcheck:
+      test: ["CMD","wget","-qO-","http://localhost:${DTADMIN_API_PORT}/management/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
     labels:
-      - "traefik.enable=true"
-      - "traefik.http.routers.yts-admin.rule=Host(`${HOST_ADMIN}`)"
-      - "traefik.http.routers.yts-admin.entrypoints=websecure"
-      - "traefik.http.routers.yts-admin.tls=true"
-      - "traefik.http.services.yts-admin.loadbalancer.server.port=8080"
+      - traefik.enable=true
+      # 同域：Host(${HOST_PORTAL}) + /api 前缀
+      - traefik.http.routers.yts-dtadmin-api.rule=Host(`${HOST_PORTAL}`) && PathPrefix(`/api`)
+      - traefik.http.routers.yts-dtadmin-api.entrypoints=websecure
+      - traefik.http.routers.yts-dtadmin-api.tls=true
+      # /api 转发到后端根路径：去掉 /api 前缀
+      - traefik.http.middlewares.yts-dtadmin-api-strip.stripprefixregex.regex=/api
+      - traefik.http.routers.yts-dtadmin-api.middlewares=yts-dtadmin-api-strip@docker
+      # 指定后端端口
+      - traefik.http.services.yts-dtadmin-api.loadbalancer.server.port=${DTADMIN_API_PORT}
+      # 如你之前的前端容器与 Traefik 不在同一网络，请显式指定：
+      # - traefik.docker.network=yst-stack_yts-core
     restart: unless-stopped
-    networks:
-      - yts-core
+    networks: [yts-core]
 
-  yts-loki:
-    image: ${IMAGE_LOKI}
-    profiles:
-      - logging
-    command: ["-config.file=/etc/loki/config.yml"]
-    ports:
-      - "127.0.0.1:3100:3100"
-    volumes:
-      - ./services/yts-loki/init/config.yml:/etc/loki/config.yml:ro
-      - ./services/yts-loki/data:/loki
-    restart: unless-stopped
-    networks:
-      - yts-core
+  # yts-dtadminui:
+  #   image: yts-dtadminui:latest
+  #   environment:
+  #     PUBLIC_BASE_URL: https://${HOST_PORTAL}
+  #   labels:
+  #     - "traefik.enable=true"
+  #     - "traefik.http.routers.yts-adminui.rule=Host(`${HOST_PORTAL}`)"
+  #     - "traefik.http.routers.yts-adminui.entrypoints=websecure"
+  #     - "traefik.http.routers.yts-adminui.tls=true"
+  #     - "traefik.http.services.yts-adminui.loadbalancer.server.port=3001"
+  #   restart: unless-stopped
+  #   networks:
+  #     - yts-core
 
-  yts-promtail:
-    image: ${IMAGE_PROMTAIL}
-    profiles:
-      - logging
-    command: ["--config.file=/etc/promtail/config.yml"]
-    depends_on:
-      yts-loki:
-        condition: service_started
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-      - ./services/yts-promtail/init/config.yml:/etc/promtail/config.yml:ro
-    restart: unless-stopped
-    networks:
-      - yts-core
+  # yts-dtadmin:
+  #   image: yts-dtadmin:latest
+  #   environment:
+  #     APP_EXTERNAL_URL: https://${HOST_ADMIN}
+  #     OIDC_ISSUER: https://${HOST_SSO}
+  #   labels:
+  #     - "traefik.enable=true"
+  #     - "traefik.http.routers.yts-admin.rule=Host(`${HOST_ADMIN}`)"
+  #     - "traefik.http.routers.yts-admin.entrypoints=websecure"
+  #     - "traefik.http.routers.yts-admin.tls=true"
+  #     - "traefik.http.services.yts-admin.loadbalancer.server.port=8080"
+  #   restart: unless-stopped
+  #   networks:
+  #     - yts-core
 
-  yts-prometheus:
-    image: ${IMAGE_PROMETHEUS}
-    profiles:
-      - monitoring
-    command:
-      - "--config.file=/etc/prometheus/prometheus.yml"
-      - "--storage.tsdb.path=/prometheus"
-    volumes:
-      - ./services/yts-prometheus/init/prometheus.yml:/etc/prometheus/prometheus.yml:ro
-      - ./services/yts-prometheus/data:/prometheus
-    restart: unless-stopped
-    networks:
-      - yts-core
+  # yts-loki:
+  #   image: ${IMAGE_LOKI}
+  #   profiles:
+  #     - logging
+  #   command: ["-config.file=/etc/loki/config.yml"]
+  #   ports:
+  #     - "127.0.0.1:3100:3100"
+  #   volumes:
+  #     - ./services/yts-loki/init/config.yml:/etc/loki/config.yml:ro
+  #     - ./services/yts-loki/data:/loki
+  #   restart: unless-stopped
+  #   networks:
+  #     - yts-core
 
-  yts-grafana:
-    image: ${IMAGE_GRAFANA}
-    profiles:
-      - monitoring
-    environment:
-      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER}
-      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD}
-    ports:
-      - "127.0.0.1:3001:3000"
-    volumes:
-      - ./services/yts-grafana/data:/var/lib/grafana
-    restart: unless-stopped
-    networks:
-      - yts-core
+  # yts-promtail:
+  #   image: ${IMAGE_PROMTAIL}
+  #   profiles:
+  #     - logging
+  #   command: ["--config.file=/etc/promtail/config.yml"]
+  #   depends_on:
+  #     yts-loki:
+  #       condition: service_started
+  #   volumes:
+  #     - /var/run/docker.sock:/var/run/docker.sock:ro
+  #     - ./services/yts-promtail/init/config.yml:/etc/promtail/config.yml:ro
+  #   restart: unless-stopped
+  #   networks:
+  #     - yts-core
 
-  yts-cadvisor:
-    image: ${IMAGE_CADVISOR}
-    profiles:
-      - monitoring
-    privileged: true
-    command:
-      - "--housekeeping_interval=10s"
-    volumes:
-      - /:/rootfs:ro
-      - /var/run:/var/run:ro
-      - /sys:/sys:ro
-      - /var/lib/docker/:/var/lib/docker:ro
-    restart: unless-stopped
-    networks:
-      - yts-core
+  # yts-prometheus:
+  #   image: ${IMAGE_PROMETHEUS}
+  #   profiles:
+  #     - monitoring
+  #   command:
+  #     - "--config.file=/etc/prometheus/prometheus.yml"
+  #     - "--storage.tsdb.path=/prometheus"
+  #   volumes:
+  #     - ./services/yts-prometheus/init/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+  #     - ./services/yts-prometheus/data:/prometheus
+  #   restart: unless-stopped
+  #   networks:
+  #     - yts-core
+
+  # yts-grafana:
+  #   image: ${IMAGE_GRAFANA}
+  #   profiles:
+  #     - monitoring
+  #   environment:
+  #     GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER}
+  #     GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD}
+  #   ports:
+  #     - "127.0.0.1:3001:3000"
+  #   volumes:
+  #     - ./services/yts-grafana/data:/var/lib/grafana
+  #   restart: unless-stopped
+  #   networks:
+  #     - yts-core
+
+  # yts-cadvisor:
+  #   image: ${IMAGE_CADVISOR}
+  #   profiles:
+  #     - monitoring
+  #   privileged: true
+  #   command:
+  #     - "--housekeeping_interval=10s"
+  #   volumes:
+  #     - /:/rootfs:ro
+  #     - /var/run:/var/run:ro
+  #     - /sys:/sys:ro
+  #     - /var/lib/docker/:/var/lib/docker:ro
+  #   restart: unless-stopped
+  #   networks:
+  #     - yts-core
+
+volumes:
+  gradle-cache:
 
 networks:
   yts-core:
