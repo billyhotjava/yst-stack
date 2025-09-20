@@ -340,6 +340,7 @@ services:
     networks:
       - yts-core
 
+<<<<<<< Updated upstream
   yts-llm:
     image: ${IMAGE_OLLAMA}
     environment:
@@ -489,3 +490,68 @@ services:
 networks:
   yts-core:
     driver: bridge
+=======
+  # yts-llm:
+  #   image: ollama/ollama:latest
+  #   environment:
+  #     OLLAMA_NUM_PARALLEL: ${OLLAMA_NUM_PARALLEL}
+  #     OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE}
+  #   volumes:
+  #     - ./models:/root/.ollama:rw
+  #   entrypoint: ["/bin/sh","-c"]
+  #   command: >
+  #     "ollama serve & 
+  #      sleep 3 && 
+  #      ollama pull ${OLLAMA_MODEL} || true && 
+  #      tail -f /dev/null"
+  #   labels:
+  #     - "traefik.enable=true"
+  #     - "traefik.http.routers.yts-llm.rule=Host(`${HOST_AI}`)"
+  #     - "traefik.http.routers.yts-llm.entrypoints=websecure"
+  #     - "traefik.http.routers.yts-llm.tls=true"
+  #     - "traefik.http.services.yts-llm.loadbalancer.server.port=11434"
+  #   restart: unless-stopped
+
+  # yts-ai-gateway:
+  #   image: yts-ai-gateway:latest
+  #   environment:
+  #     LLM_BASE_URL: http://yts-llm:11434
+  #     READONLY_MODE: "true"
+  #     DEFAULT_QUERY_LIMIT: "1000"
+  #     OIDC_ISSUER: https://${HOST_SSO}
+  #   depends_on:
+  #     yts-llm:
+  #       condition: service_started
+  #   labels:
+  #     - "traefik.enable=true"
+  #     - "traefik.http.routers.yts-aigw.rule=Host(`${HOST_ASSIST}`)"
+  #     - "traefik.http.routers.yts-aigw.entrypoints=websecure"
+  #     - "traefik.http.routers.yts-aigw.tls=true"
+  #     - "traefik.http.services.yts-aigw.loadbalancer.server.port=7080"
+  #   restart: unless-stopped
+
+  # yts-dtadminui:
+  #   image: yts-dtadminui:latest
+  #   environment:
+  #     PUBLIC_BASE_URL: https://${HOST_PORTAL}
+  #   labels:
+  #     - "traefik.enable=true"
+  #     - "traefik.http.routers.yts-adminui.rule=Host(`${HOST_PORTAL}`)"
+  #     - "traefik.http.routers.yts-adminui.entrypoints=websecure"
+  #     - "traefik.http.routers.yts-adminui.tls=true"
+  #     - "traefik.http.services.yts-adminui.loadbalancer.server.port=3000"
+  #   restart: unless-stopped
+
+  # yts-dtadmin:
+  #   image: yts-dtadmin:latest
+  #   environment:
+  #     APP_EXTERNAL_URL: https://${HOST_ADMIN}
+  #     OIDC_ISSUER: https://${HOST_SSO}
+  #   labels:
+  #     - "traefik.enable=true"
+  #     - "traefik.http.routers.yts-admin.rule=Host(`${HOST_ADMIN}`)"
+  #     - "traefik.http.routers.yts-admin.entrypoints=websecure"
+  #     - "traefik.http.routers.yts-admin.tls=true"
+  #     - "traefik.http.services.yts-admin.loadbalancer.server.port=8080"
+  #   restart: unless-stopped
+>>>>>>> Stashed changes
