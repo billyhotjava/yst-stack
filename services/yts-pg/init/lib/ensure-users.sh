@@ -1,6 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+sql_escape_literal() {
+  local value="${1-}"
+  local squote="'"
+  local doubled="''"
+  value=${value//${squote}/${doubled}}
+  printf '%s' "${value}"
+}
+
 ensure_pg_role_and_db() {
   local role="${1:-}"
   local password="${2:-}"
@@ -11,11 +19,18 @@ ensure_pg_role_and_db() {
     return 0
   fi
 
-  "${psql[@]}" --set=role_name="${role}" --set=role_pwd="${password}" --set=db_name="${database}" <<'SQL'
-DO $do$
+  local role_literal
+  local role_pwd_literal
+  local db_literal
+  role_literal="$(sql_escape_literal "${role}")"
+  role_pwd_literal="$(sql_escape_literal "${password}")"
+  db_literal="$(sql_escape_literal "${database}")"
+
+  "${psql[@]}" <<SQL
+DO \$do$
 DECLARE
-  role_name text := :'role_name';
-  role_pwd text := :'role_pwd';
+  role_name text := '${role_literal}';
+  role_pwd text := '${role_pwd_literal}';
 BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = role_name) THEN
     EXECUTE format('CREATE ROLE %I LOGIN PASSWORD %L', role_name, role_pwd);
@@ -23,12 +38,12 @@ BEGIN
     EXECUTE format('ALTER ROLE %I WITH LOGIN PASSWORD %L', role_name, role_pwd);
   END IF;
 END
-$do$;
+\$do$;
 
-DO $do$
+DO \$do$
 DECLARE
-  role_name text := :'role_name';
-  db_name text := :'db_name';
+  role_name text := '${role_literal}';
+  db_name text := '${db_literal}';
 BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = db_name) THEN
     EXECUTE format('CREATE DATABASE %I OWNER %I', db_name, role_name);
@@ -36,7 +51,7 @@ BEGIN
     EXECUTE format('ALTER DATABASE %I OWNER TO %I', db_name, role_name);
   END IF;
 END
-$do$;
+\$do$;
 SQL
 }
 
