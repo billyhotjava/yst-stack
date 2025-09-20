@@ -10,13 +10,21 @@ services:
   yts-proxy:
     image: ${IMAGE_TRAEFIK}
     command:
-      - "--api.dashboard=false"
+      - "--api.dashboard=${TRAEFIK_DASHBOARD}"
+      - "--api.insecure=${TRAEFIK_DASHBOARD}"
       - "--entrypoints.websecure.address=:443"
+      - "--entrypoints.metrics.address=:${TRAEFIK_METRICS_PORT}"
       - "--providers.docker=true"
       - "--serversTransport.insecureSkipVerify=true"
       - "--log.level=INFO"
+      - "--metrics.prometheus=true"
+      - "--metrics.prometheus.entryPoint=metrics"
+      - "--metrics.prometheus.addEntryPointsLabels=true"
+      - "--metrics.prometheus.addServicesLabels=true"
     ports:
       - "${TLS_PORT}:443"
+      - "127.0.0.1:${TRAEFIK_DASHBOARD_PORT}:8080"
+      - "127.0.0.1:${TRAEFIK_METRICS_PORT}:${TRAEFIK_METRICS_PORT}"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - ./tls/certs/server.crt:/certs/server.crt:ro
@@ -29,6 +37,8 @@ services:
       - "traefik.http.routers.default-secure.tls.certificates[0].certFile=/certs/server.crt"
       - "traefik.http.routers.default-secure.tls.certificates[0].keyFile=/certs/server.key"
     restart: unless-stopped
+    networks:
+      - yts-core
 
   yts-pg:
     image: ${IMAGE_POSTGRES}
@@ -43,6 +53,8 @@ services:
       test: ["CMD-SHELL","pg_isready -U ${PG_SUPER_USER} -d postgres"]
       <<: *hc
     restart: unless-stopped
+    networks:
+      - yts-core
 
   yts-keycloak:
     image: ${IMAGE_KEYCLOAK}
@@ -66,6 +78,8 @@ services:
       - "traefik.http.routers.yts-kc.tls=true"
       - "traefik.http.services.yts-kc.loadbalancer.server.port=8080"
     restart: unless-stopped
+    networks:
+      - yts-core
 
   yts-minio:
     image: ${IMAGE_MINIO}
@@ -93,6 +107,8 @@ services:
       - "traefik.http.middlewares.yts-strip-s3.stripprefixregex.regex=/s3"
       - "traefik.http.routers.yts-minio-api.middlewares=yts-strip-s3@docker"
     restart: unless-stopped
+    networks:
+      - yts-core
 
   yts-minio-init:
     image: ${IMAGE_MINIO_MC}
@@ -107,6 +123,8 @@ services:
     volumes:
       - ./minio/init.sh:/init.sh:ro
     restart: "no"
+    networks:
+      - yts-core
 
   yts-metastore:
     image: ${IMAGE_HIVE}
@@ -125,6 +143,8 @@ services:
       test: ["CMD-SHELL","/opt/hive/bin/schematool -dbType postgres -info -userName ${PG_USER_HMS} -passWord ${PG_PWD_HMS} -url jdbc:postgresql://${PG_HOST}:${PG_PORT}/${PG_DB_HMS} >/dev/null 2>&1 || exit 1"]
       <<: *hc
     restart: unless-stopped
+    networks:
+      - yts-core
 
   yts-trino:
     image: ${IMAGE_TRINO}
@@ -148,6 +168,8 @@ services:
       - "traefik.http.routers.yts-trino.tls=true"
       - "traefik.http.services.yts-trino.loadbalancer.server.port=8080"
     restart: unless-stopped
+    networks:
+      - yts-core
 
   yts-airbyte-server:
     image: ${IMAGE_AIRBYTE_SERVER}
@@ -191,6 +213,8 @@ services:
       - "traefik.http.routers.yts-airbyte-api.tls=true"
       - "traefik.http.services.yts-airbyte-api.loadbalancer.server.port=8001"
     restart: unless-stopped
+    networks:
+      - yts-core
 
   yts-airbyte-worker:
     image: ${IMAGE_AIRBYTE_WORKER}
@@ -225,6 +249,8 @@ services:
       yts-airbyte-temporal:
         condition: service_started
     restart: unless-stopped
+    networks:
+      - yts-core
 
   yts-airbyte-temporal:
     image: ${IMAGE_TEMPORAL}
@@ -242,21 +268,41 @@ services:
       test: ["CMD","tctl","--address","localhost:7233","namespace","list"]
       <<: *hc
     restart: unless-stopped
+    networks:
+      - yts-core
 
   yts-om-es:
     image: ${IMAGE_ELASTICSEARCH}
     environment:
       - discovery.type=single-node
-      - xpack.security.enabled=false
+      - xpack.security.enabled=${ELASTICSEARCH_SECURITY_ENABLED}
+      - xpack.security.http.ssl.enabled=${ELASTICSEARCH_HTTP_SSL_ENABLED}
+      - xpack.security.http.ssl.key=${ELASTICSEARCH_HTTP_SSL_KEY}
+      - xpack.security.http.ssl.certificate=${ELASTICSEARCH_HTTP_SSL_CERT}
+      - xpack.security.http.ssl.certificate_authorities=${ELASTICSEARCH_HTTP_SSL_CA}
+      - ELASTIC_PASSWORD=${ELASTIC_PASSWORD}
+      - ELASTIC_USERNAME=${ELASTICSEARCH_USERNAME}
     volumes:
       - ./openmetadata/es:/usr/share/elasticsearch/data
+      - ./openmetadata/es/certs:/usr/share/elasticsearch/config/certs:ro
     healthcheck:
       test:
         - CMD-SHELL
         - >-
-          curl -fsS http://localhost:9200/_cluster/health | grep -Eq '"status":"(yellow|green)"'
+          URL="$${ELASTICSEARCH_SCHEME}://localhost:9200/_cluster/health";
+          set -- curl -fsS;
+          if [ "$${ELASTICSEARCH_SECURITY_ENABLED}" = "true" ]; then
+            set -- "$@" -u "$${ELASTICSEARCH_USERNAME}:$${ELASTIC_PASSWORD}"
+          fi;
+          if [ "$${ELASTICSEARCH_HTTP_SSL_ENABLED}" = "true" ]; then
+            set -- "$@" --cacert "$${ELASTICSEARCH_HTTP_SSL_CA}"
+          fi;
+          set -- "$@" "$${URL}";
+          "$@" | grep -Eq '"status":"(yellow|green)"'
       <<: *hc
     restart: unless-stopped
+    networks:
+      - yts-core
 
   yts-openmetadata-server:
     image: ${IMAGE_OPENMETADATA}
@@ -276,6 +322,14 @@ services:
       AUTHENTICATION_PROVIDER: basic
       ELASTICSEARCH_HOST: yts-om-es
       ELASTICSEARCH_PORT: 9200
+      ELASTICSEARCH_SCHEME: ${ELASTICSEARCH_SCHEME}
+      ELASTICSEARCH_USERNAME: ${ELASTICSEARCH_USERNAME}
+      ELASTICSEARCH_USER: ${ELASTICSEARCH_USERNAME}
+      ELASTICSEARCH_PASSWORD: ${ELASTIC_PASSWORD}
+      ELASTICSEARCH_VERIFY_CERTIFICATE: ${ELASTICSEARCH_VERIFY_CERTIFICATE}
+      ELASTICSEARCH_SSL_CERT: ${OPENMETADATA_ELASTICSEARCH_CA}
+    volumes:
+      - ./openmetadata/es/certs:/opt/openmetadata/certs:ro
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.yts-om.rule=Host(`${HOST_META}`)"
@@ -283,9 +337,11 @@ services:
       - "traefik.http.routers.yts-om.tls=true"
       - "traefik.http.services.yts-om.loadbalancer.server.port=8585"
     restart: unless-stopped
+    networks:
+      - yts-core
 
   yts-llm:
-    image: ollama/ollama:latest
+    image: ${IMAGE_OLLAMA}
     environment:
       OLLAMA_NUM_PARALLEL: ${OLLAMA_NUM_PARALLEL}
       OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE}
@@ -304,6 +360,8 @@ services:
       - "traefik.http.routers.yts-llm.tls=true"
       - "traefik.http.services.yts-llm.loadbalancer.server.port=11434"
     restart: unless-stopped
+    networks:
+      - yts-core
 
   yts-ai-gateway:
     image: yts-ai-gateway:latest
@@ -322,6 +380,8 @@ services:
       - "traefik.http.routers.yts-aigw.tls=true"
       - "traefik.http.services.yts-aigw.loadbalancer.server.port=7080"
     restart: unless-stopped
+    networks:
+      - yts-core
 
   yts-dtadminui:
     image: yts-dtadminui:latest
@@ -334,6 +394,8 @@ services:
       - "traefik.http.routers.yts-adminui.tls=true"
       - "traefik.http.services.yts-adminui.loadbalancer.server.port=3000"
     restart: unless-stopped
+    networks:
+      - yts-core
 
   yts-dtadmin:
     image: yts-dtadmin:latest
@@ -347,3 +409,83 @@ services:
       - "traefik.http.routers.yts-admin.tls=true"
       - "traefik.http.services.yts-admin.loadbalancer.server.port=8080"
     restart: unless-stopped
+    networks:
+      - yts-core
+
+  yts-loki:
+    image: ${IMAGE_LOKI}
+    profiles:
+      - logging
+    command: ["-config.file=/etc/loki/config.yml"]
+    ports:
+      - "127.0.0.1:3100:3100"
+    volumes:
+      - ./observability/loki-config.yml:/etc/loki/config.yml:ro
+      - ./observability/loki:/loki
+    restart: unless-stopped
+    networks:
+      - yts-core
+
+  yts-promtail:
+    image: ${IMAGE_PROMTAIL}
+    profiles:
+      - logging
+    command: ["--config.file=/etc/promtail/config.yml"]
+    depends_on:
+      yts-loki:
+        condition: service_started
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./observability/promtail-config.yml:/etc/promtail/config.yml:ro
+    restart: unless-stopped
+    networks:
+      - yts-core
+
+  yts-prometheus:
+    image: ${IMAGE_PROMETHEUS}
+    profiles:
+      - monitoring
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+    volumes:
+      - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./observability/prometheus-data:/prometheus
+    restart: unless-stopped
+    networks:
+      - yts-core
+
+  yts-grafana:
+    image: ${IMAGE_GRAFANA}
+    profiles:
+      - monitoring
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD}
+    ports:
+      - "127.0.0.1:3001:3000"
+    volumes:
+      - ./observability/grafana:/var/lib/grafana
+    restart: unless-stopped
+    networks:
+      - yts-core
+
+  yts-cadvisor:
+    image: ${IMAGE_CADVISOR}
+    profiles:
+      - monitoring
+    privileged: true
+    command:
+      - "--housekeeping_interval=10s"
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+    restart: unless-stopped
+    networks:
+      - yts-core
+
+networks:
+  yts-core:
+    driver: bridge
