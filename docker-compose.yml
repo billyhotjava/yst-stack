@@ -7,35 +7,48 @@ x-hc: &hc
   start_period: 20s
 
 services:
+
   yts-proxy:
     image: ${IMAGE_TRAEFIK}
+    container_name: yts-proxy
     command:
       - "--api.dashboard=${TRAEFIK_DASHBOARD}"
       - "--api.insecure=${TRAEFIK_DASHBOARD}"
-      - "--entrypoints.websecure.address=:443"
-      - "--entrypoints.metrics.address=:${TRAEFIK_METRICS_PORT}"
       - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--providers.file.filename=/etc/traefik/dynamic/traefik-dynamic.yml"
+      - "--entrypoints.web.address=:80"
+      - "--entrypoints.web.http.redirections.entrypoint.to=websecure"
+      - "--entrypoints.web.http.redirections.entrypoint.scheme=https"
+      - "--entrypoints.websecure.address=:443"
+      - "--ping=${TRAEFIK_ENABLE_PING}"
+      - "--entrypoints.metrics.address=:${TRAEFIK_METRICS_PORT}"
+      - "--accesslog=true"
       - "--serversTransport.insecureSkipVerify=true"
       - "--log.level=INFO"
       - "--metrics.prometheus=true"
       - "--metrics.prometheus.entryPoint=metrics"
       - "--metrics.prometheus.addEntryPointsLabels=true"
       - "--metrics.prometheus.addServicesLabels=true"
+
     ports:
+      - "80:80"
       - "${TLS_PORT}:443"
       - "127.0.0.1:${TRAEFIK_DASHBOARD_PORT}:8080"
       - "127.0.0.1:${TRAEFIK_METRICS_PORT}:${TRAEFIK_METRICS_PORT}"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
-      - ./services/yts-proxy/data/certs/server.crt:/certs/server.crt:ro
-      - ./services/yts-proxy/data/certs/server.key:/certs/server.key:ro
+      - ./services/yts-proxy/dynamic:/etc/traefik/dynamic:ro
+      - ./services/certs:/etc/traefik/certs:ro
+      - ./services/certs/server.crt:/certs/server.crt:ro
+      - ./services/certs/server.key:/certs/server.key:ro
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.default-secure.tls=true"
       - "traefik.http.routers.default-secure.entrypoints=websecure"
       - "traefik.http.routers.default-secure.rule=HostRegexp(`{any:.*}`)"
-      - "traefik.http.tls.certificates[0].certFile=/certs/server.crt"
-      - "traefik.http.tls.certificates[0].keyFile=/certs/server.key"
+      - "traefik.tls.certificates[0].certFile=/certs/server.crt"
+      - "traefik.tls.certificates[0].keyFile=/certs/server.key"
     restart: unless-stopped
     networks:
       - yts-core
@@ -65,12 +78,20 @@ services:
       test: ["CMD-SHELL","/docker-entrypoint-initdb.d/99-ensure-users-runtime.sh"]
       <<: *hc
     restart: unless-stopped
+    ports:
+      - 5432:5432
     networks:
       - yts-core
 
+
   yts-keycloak:
     image: ${IMAGE_KEYCLOAK}
-    command: ["start-dev", "--http-port=8080"]
+    container_name: yts-keycloak
+    command:
+      - start
+      - --hostname=${HOST_SSO}
+      - --proxy-headers=xforwarded
+      - --http-enabled=${KC_HTTP_ENABLED}
     environment:
       KEYCLOAK_ADMIN: ${KC_ADMIN}
       KEYCLOAK_ADMIN_PASSWORD: ${KC_ADMIN_PWD}
@@ -78,17 +99,33 @@ services:
       KC_DB_URL: jdbc:postgresql://${PG_HOST}:${PG_PORT}/${PG_DB_KEYCLOAK}
       KC_DB_USERNAME: ${PG_USER_KEYCLOAK}
       KC_DB_PASSWORD: ${PG_PWD_KEYCLOAK}
-      KC_PROXY: edge
-      KC_HOSTNAME: https://${HOST_SSO}
+      KC_HOSTNAME: ${KC_HOSTNAME}
+      KC_HOSTNAME_PORT: ${KC_HOSTNAME_PORT}
+      KC_HOSTNAME_URL: ${KC_HOSTNAME_URL}
+      KC_HOSTNAME_STRICT: ${KC_HOSTNAME_STRICT}
+      KC_HOSTNAME_STRICT_HTTPS: ${KC_HOSTNAME_STRICT_HTTPS}
+      KC_HTTP_ENABLED: ${KC_HTTP_ENABLED}
+      KC_FEATURES: scripts
     depends_on:
       yts-pg:
         condition: service_healthy
     labels:
       - "traefik.enable=true"
-      - "traefik.http.routers.yts-kc.rule=Host(`${HOST_SSO}`)"
-      - "traefik.http.routers.yts-kc.entrypoints=websecure"
-      - "traefik.http.routers.yts-kc.tls=true"
-      - "traefik.http.services.yts-kc.loadbalancer.server.port=8080"
+      - "traefik.http.routers.kc-redirect.rule=Host(`${HOST_SSO}`)"
+      - "traefik.http.routers.kc-redirect.entrypoints=web"
+      - "traefik.http.routers.kc-redirect.middlewares=redirect-to-https"
+      - "traefik.http.middlewares.redirect-to-https.redirectscheme.scheme=https"
+      - "traefik.http.routers.kc.rule=Host(`${HOST_SSO}`)"
+      - "traefik.http.routers.kc.entrypoints=websecure"
+      - "traefik.http.routers.kc.tls=true"
+      - "traefik.http.routers.kc.service=kc"
+      #- "traefik.http.routers.kc.tls.domains[0].main=${HOST_SSO}"
+      - "traefik.http.services.kc.loadbalancer.server.port=8080"
+      - "traefik.http.services.kc.loadbalancer.passhostheader=true"
+      #- optional config for Keycloak behind proxy with path
+      - "traefik.http.middlewares.kc-headers.headers.customrequestheaders.X-Forwarded-Proto=https"
+      - "traefik.http.middlewares.kc-headers.headers.customrequestheaders.X-Forwarded-Host=${HOST_SSO}"
+      - "traefik.http.routers.kc.middlewares=kc-headers"
     restart: unless-stopped
     networks:
       - yts-core
@@ -140,22 +177,19 @@ services:
     networks:
       - yts-core
 
-  yts-metastore:
-    image: ${IMAGE_HIVE}
-    depends_on:
-      yts-pg:
-        condition: service_healthy
-    environment:
-      SERVICE_NAME: metastore
-      HIVE_METASTORE_DB_TYPE: postgres
-      HIVE_METASTORE_JDBC_URL: jdbc:postgresql://${PG_HOST}:${PG_PORT}/${PG_DB_HMS}
-      HIVE_METASTORE_USER: ${PG_USER_HMS}
-      HIVE_METASTORE_PASSWORD: ${PG_PWD_HMS}
-      HADOOP_CLIENT_OPTS: "-Xms256m -Xmx1024m"
-    command: ["/opt/hive/bin/hive","--service","metastore","-p","9083"]
+  yts-nessie:
+    image: ${IMAGE_NESSIE}
+    container_name: yts-nessie
     healthcheck:
-      test: ["CMD-SHELL","/opt/hive/bin/schematool -dbType postgres -info -userName ${PG_USER_HMS} -passWord ${PG_PWD_HMS} -url jdbc:postgresql://${PG_HOST}:${PG_PORT}/${PG_DB_HMS} >/dev/null 2>&1 || exit 1"]
+      test: ["CMD-SHELL","curl -fsS http://127.0.0.1:19120/api/v1/config >/dev/null || wget -qO- http://127.0.0.1:19120/api/v1/config >/dev/null"]
       <<: *hc
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=yts-core"
+      - "traefik.http.routers.yts-nessie.rule=Host(`${HOST_NESSIE}`)"
+      - "traefik.http.routers.yts-nessie.entrypoints=websecure"
+      - "traefik.http.routers.yts-nessie.tls=true"
+      - "traefik.http.services.yts-nessie.loadbalancer.server.port=19120"
     restart: unless-stopped
     networks:
       - yts-core
@@ -163,7 +197,7 @@ services:
   yts-trino:
     image: ${IMAGE_TRINO}
     depends_on:
-      yts-metastore:
+      yts-nessie:
         condition: service_started
       yts-minio:
         condition: service_started
@@ -413,7 +447,7 @@ services:
       # 热更新在挂载卷/WSL上更稳定
       CHOKIDAR_USEPOLLING: "1"
       WATCHPACK_POLLING: "true"
-      BROWSER: "noneyts-adminui.loadbalancer.server.port"
+      BROWSER: "none"
     volumes:
       # 把源码目录换成你的实际路径
       #- ./services/dtadmin-ui:/app
@@ -439,10 +473,9 @@ services:
     networks:
       - yts-core
 
-
   yts-dtadmin:
     image: ghcr.io/graalvm/graalvm-community:21
-    container_name: yts-dtadmin-api
+    container_name: yts-dtadmin
     working_dir: /app
     environment:
       SPRING_PROFILES_ACTIVE: dev
@@ -455,11 +488,22 @@ services:
       SPRING_DATASOURCE_PASSWORD: ${DTADMIN_DB_PASSWORD}
       # 允许被反代：如有需要可放宽 CORS
       # JHIPSTER_CORS_ALLOWED_ORIGINS: https://${HOST_PORTAL}
+
+      # 添加 OAuth2 配置
+      SPRING_SECURITY_OAUTH2_CLIENT_PROVIDER_KEYCLOAK_ISSUER_URI: https://${HOST_SSO}/realms/${KC_REALM}
+      SPRING_SECURITY_OAUTH2_CLIENT_REGISTRATION_KEYCLOAK_CLIENT_ID: ${OAUTH2_CLIENT_ID}
+      SPRING_SECURITY_OAUTH2_CLIENT_REGISTRATION_KEYCLOAK_CLIENT_SECRET: ${OAUTH2_CLIENT_SECRET}
+      SPRING_SECURITY_OAUTH2_CLIENT_REGISTRATION_KEYCLOAK_SCOPE: openid,profile,email
+      
+      # 跨域配置（如果需要）
+      SPRING_SECURITY_OAUTH2_CLIENT_REGISTRATION_KEYCLOAK_REDIRECT_URI: https://${HOST_PORTAL}/login/oauth2/code/keycloak
+      CORS_ALLOWED_ORIGINS: https://${HOST_PORTAL}
     volumes:
       - /opt/prod/trendsense/source/dtadmin:/app
       # Gradle/Maven 缓存（可选，加快编译）
-      - gradle-cache:/root/.gradle
-      # - maven-cache:/root/.m2
+      #- gradle-cache:/root/.gradle
+      #- maven-cache:/root/.m2
+      - /home/billy/.m2:/root/.m2
     command: >
       sh -lc "
         if [ -f gradlew ]; then chmod +x gradlew; ./gradlew -x test bootRun --args='--server.port=${DTADMIN_API_PORT}';

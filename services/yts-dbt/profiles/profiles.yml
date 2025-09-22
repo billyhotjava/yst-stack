@@ -1,0 +1,15 @@
+yts_dbt:
+  target: dev
+  outputs:
+    dev:
+      type: trino
+      host: "{{ env_var('DBT_TRINO_HOST', 'yts-trino') }}"
+      port: {{ env_var('DBT_TRINO_PORT', '8080') | int }}
+      user: "{{ env_var('DBT_TRINO_USER', 'dbt') }}"
+      password: "{{ env_var('DBT_TRINO_PASSWORD', '') }}"
+      catalog: "{{ env_var('DBT_TRINO_CATALOG', 'doris') }}"
+      schema: "{{ env_var('DBT_TRINO_SCHEMA', 'analytics') }}"
+      http_scheme: "{{ env_var('DBT_TRINO_HTTP_SCHEME', 'http') }}"
+      threads: 4
+      keepalive_interval: 0
+      retries: 1

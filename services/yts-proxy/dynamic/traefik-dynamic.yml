@@ -1,0 +1,18 @@
+tls:
+  stores:
+    default:
+      defaultCertificate:
+        certFile: /etc/traefik/certs/server.crt
+        keyFile: /etc/traefik/certs/server.key
+  certificates:
+    - certFile: /etc/traefik/certs/server.crt
+      keyFile: /etc/traefik/certs/server.key
+      stores:
+        - default
+
+http:
+  middlewares:
+    auth:
+      basicAuth:
+        users:
+          - "user:$$apr1$$H6uswN2M$$06wU32mYF1626f.K9tA9G1"

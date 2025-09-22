@@ -1,0 +1,905 @@
+name: yts-stack
+services:
+  yts-airbyte-bootloader:
+    depends_on:
+      yts-pg:
+        condition: service_healthy
+        required: true
+    environment:
+      AIRBYTE_JOBS_KUBE_NAMESPACE: default
+      AIRBYTE_ROLE: bootloader
+      AIRBYTE_VERSION: 1.8.2
+      AIRBYTE_WORKER_ENVIRONMENT: DOCKER
+      CONFIG_DATABASE_PASSWORD: Devops123456@
+      CONFIG_DATABASE_URL: jdbc:postgresql://yts-pg:5432/yts_airbyte
+      CONFIG_DATABASE_USER: yts_airbyte
+      DATABASE_PASSWORD: Devops123456@
+      DATABASE_URL: jdbc:postgresql://yts-pg:5432/yts_airbyte?sslmode=disable
+      DATABASE_USER: yts_airbyte
+      JOB_DATABASE_PASSWORD: Devops123456@
+      JOB_DATABASE_URL: jdbc:postgresql://yts-pg:5432/yts_airbyte_jobs
+      JOB_DATABASE_USER: yts_airbyte
+      RUN_CONFIG_DATABASE_MIGRATION: "true"
+      RUN_DATABASE_MIGRATION: "true"
+      RUN_JOB_DATABASE_MIGRATION: "true"
+    image: airbyte/bootloader:1.8.2
+    networks:
+      yts-core: null
+    restart: "no"
+  yts-airbyte-server:
+    depends_on:
+      yts-airbyte-bootloader:
+        condition: service_completed_successfully
+        required: true
+      yts-airbyte-temporal:
+        condition: service_started
+        required: true
+      yts-pg:
+        condition: service_healthy
+        required: true
+    environment:
+      AIRBYTE_CLOUD_STORAGE_BUCKET_ACTIVITY_PAYLOAD: yts-lake
+      AIRBYTE_CLOUD_STORAGE_BUCKET_AUDIT_LOGGING: yts-lake
+      AIRBYTE_CLOUD_STORAGE_BUCKET_LOG: yts-lake
+      AIRBYTE_CLOUD_STORAGE_BUCKET_PROFILER_OUTPUT: yts-lake
+      AIRBYTE_CLOUD_STORAGE_BUCKET_STATE: yts-lake
+      AIRBYTE_CLOUD_STORAGE_BUCKET_WORKLOAD_OUTPUT: yts-lake
+      AIRBYTE_CLOUD_STORAGE_S3_ACCESS_KEY: minio
+      AIRBYTE_CLOUD_STORAGE_S3_ENDPOINT: http://yts-minio:9000
+      AIRBYTE_CLOUD_STORAGE_S3_PATH_STYLE_ACCESS: "true"
+      AIRBYTE_CLOUD_STORAGE_S3_REGION: cn-local-1
+      AIRBYTE_CLOUD_STORAGE_S3_SECRET_ACCESS_KEY: Devops123456@
+      AIRBYTE_CLOUD_STORAGE_TYPE: S3
+      AIRBYTE_CONNECTOR_REGISTRY_ENTERPRISE_ENTERPRISE_DESTINATION_STUBS_URL: https://connectors.airbyte.com/files/enterprise-destination-stubs.json
+      AIRBYTE_CONNECTOR_REGISTRY_ENTERPRISE_ENTERPRISE_SOURCE_STUBS_URL: https://connectors.airbyte.com/files/enterprise-source-stubs.json
+      AIRBYTE_FLYWAY_CONFIGS_MINIMUM_MIGRATION_VERSION: 0.50.3
+      AIRBYTE_FLYWAY_JOBS_MINIMUM_MIGRATION_VERSION: 0.50.3
+      AIRBYTE_JOBS_KUBE_NAMESPACE: default
+      AIRBYTE_ROLE: server
+      AIRBYTE_SECRET_PERSISTENCE: testing_config_db_table
+      AIRBYTE_VERSION: 1.8.2
+      AIRBYTE_WORKER_ENVIRONMENT: DOCKER
+      CONFIG_DATABASE_PASSWORD: Devops123456@
+      CONFIG_DATABASE_URL: jdbc:postgresql://yts-pg:5432/yts_airbyte
+      CONFIG_DATABASE_USER: yts_airbyte
+      DATABASE_PASSWORD: Devops123456@
+      DATABASE_URL: jdbc:postgresql://yts-pg:5432/yts_airbyte?sslmode=disable
+      DATABASE_USER: yts_airbyte
+      INTERNAL_API_HOST: http://yts-airbyte-server:8001/
+      JOB_DATABASE_PASSWORD: Devops123456@
+      JOB_DATABASE_URL: jdbc:postgresql://yts-pg:5432/yts_airbyte_jobs
+      JOB_DATABASE_USER: yts_airbyte
+      MICRONAUT_ENVIRONMENTS: control-plane,oss
+      RUN_DATABASE_MIGRATION_ON_STARTUP: "true"
+      TEMPORAL_HOST: yts-airbyte-temporal:7233
+      WEBAPP_URL: https://airbyte.yts.local
+      WORKLOAD_API_HOST: http://yts-airbyte-server:8001/
+      WORKSPACE_ROOT: /data/airbyte/workspace
+    image: airbyte/server:1.8.2
+    labels:
+      traefik.enable: "true"
+      traefik.http.routers.yts-airbyte-api.entrypoints: websecure
+      traefik.http.routers.yts-airbyte-api.rule: Host(`airbyte.yts.local`) && PathPrefix(`/api`)
+      traefik.http.routers.yts-airbyte-api.service: yts-airbyte-api
+      traefik.http.routers.yts-airbyte-api.tls: "true"
+      traefik.http.routers.yts-airbyte-ui.entrypoints: websecure
+      traefik.http.routers.yts-airbyte-ui.rule: Host(`airbyte.yts.local`)
+      traefik.http.routers.yts-airbyte-ui.service: yts-airbyte-ui
+      traefik.http.routers.yts-airbyte-ui.tls: "true"
+      traefik.http.services.yts-airbyte-api.loadbalancer.server.port: "8001"
+      traefik.http.services.yts-airbyte-ui.loadbalancer.server.port: "8001"
+    networks:
+      yts-core: null
+    restart: unless-stopped
+    volumes:
+      - type: bind
+        source: /opt/prod/trendsense/deploy/yts-stack/services/yts-airbyte-server/data/workspace
+        target: /data/airbyte/workspace
+        bind:
+          create_host_path: true
+  yts-airbyte-temporal:
+    depends_on:
+      yts-pg:
+        condition: service_healthy
+        required: true
+    environment:
+      DB: postgres12_pgx
+      DB_PORT: "5432"
+      DBNAME: yts_temporal
+      POSTGRES_DB: yts_temporal
+      POSTGRES_PORT: "5432"
+      POSTGRES_PWD: Devops123456@
+      POSTGRES_SEEDS: yts-pg
+      POSTGRES_USER: yts_temporal
+      SKIP_DB_CREATE: "true"
+      SQL_DATABASE: yts_temporal
+      SQL_HOST: yts-pg
+      SQL_PASSWORD: Devops123456@
+      SQL_PORT: "5432"
+      SQL_TLS_ENABLED: "false"
+      SQL_USER: yts_temporal
+      SQL_VISIBILITY_DATABASE: yts_temporal_visibility
+      VISIBILITY_DBNAME: yts_temporal_visibility
+    healthcheck:
+      test:
+        - CMD
+        - tctl
+        - --address
+        - localhost:7233
+        - namespace
+        - list
+      timeout: 5s
+      interval: 10s
+      retries: 30
+      start_period: 20s
+    image: temporalio/auto-setup:1.26.3
+    networks:
+      yts-core: null
+    restart: unless-stopped
+  yts-airbyte-worker:
+    depends_on:
+      yts-airbyte-server:
+        condition: service_started
+        required: true
+      yts-airbyte-temporal:
+        condition: service_started
+        required: true
+      yts-minio:
+        condition: service_healthy
+        required: true
+      yts-pg:
+        condition: service_healthy
+        required: true
+    environment:
+      AIRBYTE_CLOUD_STORAGE_BUCKET_ACTIVITY_PAYLOAD: yts-lake
+      AIRBYTE_CLOUD_STORAGE_BUCKET_AUDIT_LOGGING: yts-lake
+      AIRBYTE_CLOUD_STORAGE_BUCKET_LOG: yts-lake
+      AIRBYTE_CLOUD_STORAGE_BUCKET_PROFILER_OUTPUT: yts-lake
+      AIRBYTE_CLOUD_STORAGE_BUCKET_STATE: yts-lake
+      AIRBYTE_CLOUD_STORAGE_BUCKET_WORKLOAD_OUTPUT: yts-lake
+      AIRBYTE_CLOUD_STORAGE_S3_ACCESS_KEY: minio
+      AIRBYTE_CLOUD_STORAGE_S3_ENDPOINT: http://yts-minio:9000
+      AIRBYTE_CLOUD_STORAGE_S3_PATH_STYLE_ACCESS: "true"
+      AIRBYTE_CLOUD_STORAGE_S3_REGION: cn-local-1
+      AIRBYTE_CLOUD_STORAGE_S3_SECRET_ACCESS_KEY: Devops123456@
+      AIRBYTE_CLOUD_STORAGE_TYPE: S3
+      AIRBYTE_CONNECTOR_REGISTRY_ENTERPRISE_ENTERPRISE_DESTINATION_STUBS_URL: https://connectors.airbyte.com/files/enterprise-destination-stubs.json
+      AIRBYTE_CONNECTOR_REGISTRY_ENTERPRISE_ENTERPRISE_SOURCE_STUBS_URL: https://connectors.airbyte.com/files/enterprise-source-stubs.json
+      AIRBYTE_FLYWAY_CONFIGS_MINIMUM_MIGRATION_VERSION: 0.50.3
+      AIRBYTE_FLYWAY_JOBS_MINIMUM_MIGRATION_VERSION: 0.50.3
+      AIRBYTE_ROLE: worker
+      AIRBYTE_SECRET_PERSISTENCE: testing_config_db_table
+      CONFIG_DATABASE_PASSWORD: Devops123456@
+      CONFIG_DATABASE_URL: jdbc:postgresql://yts-pg:5432/yts_airbyte
+      CONFIG_DATABASE_USER: yts_airbyte
+      DATABASE_PASSWORD: Devops123456@
+      DATABASE_URL: jdbc:postgresql://yts-pg:5432/yts_airbyte?sslmode=disable
+      DATABASE_USER: yts_airbyte
+      INTERNAL_API_HOST: http://yts-airbyte-server:8001/
+      JOB_DATABASE_PASSWORD: Devops123456@
+      JOB_DATABASE_URL: jdbc:postgresql://yts-pg:5432/yts_airbyte_jobs
+      JOB_DATABASE_USER: yts_airbyte
+      MICRONAUT_ENVIRONMENTS: control-plane,oss
+      TEMPORAL_HOST: yts-airbyte-temporal:7233
+      WORKLOAD_API_HOST: http://yts-airbyte-server:8001/
+      WORKSPACE_ROOT: /data/airbyte/workspace
+    image: airbyte/worker:1.8.2
+    networks:
+      yts-core: null
+    restart: unless-stopped
+    volumes:
+      - type: bind
+        source: /opt/prod/trendsense/deploy/yts-stack/services/yts-airbyte-server/data/workspace
+        target: /data/airbyte/workspace
+        bind:
+          create_host_path: true
+  yts-dbt:
+    build:
+      context: /opt/prod/trendsense/deploy/yts-stack/services/yts-dbt/images
+      dockerfile: Dockerfile
+    command:
+      - dbt
+      - rpc
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8580"
+      - --profiles-dir
+      - /dbt/profiles
+      - --project-dir
+      - /dbt/project
+    depends_on:
+      yts-trino:
+        condition: service_started
+        required: true
+    environment:
+      DBT_PROFILES_DIR: /dbt/profiles
+      DBT_PROJECT_DIR: /dbt/project
+      DBT_RPC_HOST: 0.0.0.0
+      DBT_RPC_PORT: "8580"
+      DBT_TARGET: dev
+      DBT_TRINO_CATALOG: doris
+      DBT_TRINO_HOST: yts-trino
+      DBT_TRINO_HTTP_SCHEME: http
+      DBT_TRINO_PASSWORD: ""
+      DBT_TRINO_PORT: "8080"
+      DBT_TRINO_SCHEMA: analytics
+      DBT_TRINO_USER: dbt
+    image: yts-dbt:local
+    labels:
+      traefik.enable: "true"
+      traefik.http.routers.yts-dbt.entrypoints: websecure
+      traefik.http.routers.yts-dbt.rule: Host(`dbt.yts.local`)
+      traefik.http.routers.yts-dbt.tls: "true"
+      traefik.http.services.yts-dbt.loadbalancer.server.port: "8580"
+    networks:
+      yts-core: null
+    restart: unless-stopped
+    volumes:
+      - type: bind
+        source: /opt/prod/trendsense/deploy/yts-stack/services/yts-dbt/project
+        target: /dbt/project
+        bind:
+          create_host_path: true
+      - type: bind
+        source: /opt/prod/trendsense/deploy/yts-stack/services/yts-dbt/profiles
+        target: /dbt/profiles
+        read_only: true
+        bind:
+          create_host_path: true
+      - type: bind
+        source: /opt/prod/trendsense/deploy/yts-stack/services/yts-dbt/logs
+        target: /root/.dbt/logs
+        bind:
+          create_host_path: true
+  yts-doris-be:
+    depends_on:
+      yts-doris-fe:
+        condition: service_started
+        required: true
+    environment:
+      BE_ADDR: yts-doris-be:9050
+      BE_BRPC_PORT: "9060"
+      BE_HEARTBEAT_PORT: "9050"
+      BE_WEB_PORT: "8040"
+      FE_SERVERS: yts-doris-fe:9010
+    hostname: yts-doris-be
+    healthcheck:
+      test:
+        - CMD
+        - curl
+        - -fsS
+        - http://localhost:8040
+      timeout: 5s
+      interval: 10s
+      retries: 30
+      start_period: 20s
+    image: apache/doris:be-3.1.0
+    networks:
+      yts-core: null
+    restart: unless-stopped
+    volumes:
+      - type: bind
+        source: /opt/prod/trendsense/deploy/yts-stack/services/yts-doris/be/storage
+        target: /opt/apache-doris/be/storage
+        bind:
+          create_host_path: true
+      - type: bind
+        source: /opt/prod/trendsense/deploy/yts-stack/services/yts-doris/be/log
+        target: /opt/apache-doris/be/log
+        bind:
+          create_host_path: true
+  yts-doris-broker:
+    depends_on:
+      yts-doris-fe:
+        condition: service_started
+        required: true
+    environment:
+      BROKER_ADDR: yts-doris-broker:8000
+      FE_SERVERS: yts-doris-fe:9010
+    hostname: yts-doris-broker
+    image: apache/doris:broker-3.1.0
+    networks:
+      yts-core: null
+    restart: unless-stopped
+  yts-doris-fe:
+    environment:
+      FE_EDIT_LOG_PORT: "9010"
+      FE_ID: "1"
+      FE_MYSQL_PORT: "9030"
+      FE_QUERY_PORT: "9030"
+      FE_RPC_PORT: "9020"
+      FE_SERVERS: yts-doris-fe:9010
+    hostname: yts-doris-fe
+    healthcheck:
+      test:
+        - CMD
+        - curl
+        - -fsS
+        - http://localhost:8030
+      timeout: 5s
+      interval: 10s
+      retries: 30
+      start_period: 20s
+    image: apache/doris:fe-3.1.0
+    labels:
+      traefik.enable: "true"
+      traefik.http.routers.yts-doris.entrypoints: websecure
+      traefik.http.routers.yts-doris.rule: Host(`doris.yts.local`)
+      traefik.http.routers.yts-doris.tls: "true"
+      traefik.http.services.yts-doris.loadbalancer.server.port: "8030"
+    networks:
+      yts-core: null
+    restart: unless-stopped
+    volumes:
+      - type: bind
+        source: /opt/prod/trendsense/deploy/yts-stack/services/yts-doris/fe/meta
+        target: /opt/apache-doris/fe/doris-meta
+        bind:
+          create_host_path: true
+      - type: bind
+        source: /opt/prod/trendsense/deploy/yts-stack/services/yts-doris/fe/log
+        target: /opt/apache-doris/fe/log
+        bind:
+          create_host_path: true
+  yts-dtadmin:
+    command:
+      - sh
+      - -lc
+      - "\n  if [ -f /etc/ssl/certs/yts-proxy.crt ]; then \n    keytool -importcert -noprompt -trustcacerts -alias yts-proxy \n      -file /etc/ssl/certs/yts-proxy.crt \n      -keystore /tmp/yts-truststore.p12 \n      -storetype PKCS12 \n      -storepass changeit >/dev/null 2>&1 || true; \n    export JAVA_TOOL_OPTIONS=\" -Djavax.net.ssl.trustStore=/tmp/yts-truststore.p12 -Djavax.net.ssl.trustStorePassword=changeit\"; \n  fi; \n  if [ -f gradlew ]; then chmod +x gradlew; ./gradlew -x test bootRun --args=\"--server.port=$${SERVER_PORT:-8080}\"; \n  elif [ -f mvnw ]; then chmod +x mvnw; ./mvnw -DskipTests spring-boot:run -Dspring-boot.run.jvmArguments=\"-Dserver.port=$${SERVER_PORT:-8080}\"; \n  else echo 'No Gradle/Maven wrapper found'; exit 1; fi"
+    container_name: yts-dtadmin
+    environment:
+      DB_SERVICE_DB_NAME: yts_dtadmin
+      DB_SERVICE_HOST: yts-pg
+      DB_SERVICE_PASSWORD: Devops123456@
+      DB_SERVICE_PORT: "5432"
+      DB_SERVICE_USER: yts_dtadmin
+      KEYCLOAK_ADMIN_CLIENT_ID: admin-cli
+      KEYCLOAK_ADMIN_PASSWORD: Devops123456@
+      KEYCLOAK_ADMIN_USERNAME: admin
+      KEYCLOAK_AUTH_REALM: yts
+      KEYCLOAK_CLIENT_ID: dtadmin
+      KEYCLOAK_CLIENT_SECRET: 0pEKcXkwQYO9bHTDgVr7CjQAHg1AoJBh
+      KEYCLOAK_GRANT_TYPE: password
+      KEYCLOAK_REALM: yts
+      KEYCLOAK_TRUST_ALL: "true"
+      KEYCLOAK_URL: https://sso.yts.local
+      OAUTH2_ADMIN_CLIENT_ID: dtadmin
+      OAUTH2_ADMIN_CLIENT_SECRET: 0pEKcXkwQYO9bHTDgVr7CjQAHg1AoJBh
+      OAUTH2_ISSUER_URI: https://sso.yts.local/realms/yts
+      SERVER_PORT: "8080"
+      SPRING_DATASOURCE_PLATFORM: postgresql
+      SPRING_PROFILES_ACTIVE: prod
+      TZ: Asia/Shanghai
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - wget -qO- http://localhost:$${SERVER_PORT:-8080}/management/health
+      timeout: 5s
+      interval: 10s
+      retries: 30
+      start_period: 30s
+    image: ghcr.io/graalvm/graalvm-community:21
+    labels:
+      traefik.enable: "true"
+      traefik.http.middlewares.yts-dtadmin-api-strip.stripprefixregex.regex: /api
+      traefik.http.routers.yts-dtadmin-api.entrypoints: websecure
+      traefik.http.routers.yts-dtadmin-api.middlewares: yts-dtadmin-api-strip@docker
+      traefik.http.routers.yts-dtadmin-api.rule: Host(`portal.yts.local`) && PathPrefix(`/api`)
+      traefik.http.routers.yts-dtadmin-api.tls: "true"
+      traefik.http.services.yts-dtadmin-api.loadbalancer.server.port: "8080"
+    networks:
+      yts-core: null
+    restart: unless-stopped
+    volumes:
+      - type: bind
+        source: /opt/prod/trendsense/source/dtadmin
+        target: /app
+        bind:
+          create_host_path: true
+      - type: bind
+        source: /opt/prod/trendsense/deploy/yts-stack/services/certs/server.crt
+        target: /etc/ssl/certs/yts-proxy.crt
+        read_only: true
+        bind:
+          create_host_path: true
+      - type: volume
+        source: gradle-cache
+        target: /root/.gradle
+        volume: {}
+    working_dir: /app
+  yts-dtadminui:
+    command:
+      - sh
+      - -lc
+      - |2-
+
+          corepack enable || true;
+          if [ -f pnpm-lock.yaml ]; then corepack prepare pnpm@latest --activate; pnpm i;
+            pnpm dev --host 0.0.0.0 --port 3001;
+          elif [ -f yarn.lock ]; then yarn install --frozen-lockfile;
+            yarn dev --host 0.0.0.0 --port 3001;
+          else npm ci || npm i;
+            npm run dev -- --host 0.0.0.0 --port 3001;
+          fi
+    container_name: yts-dtadminui
+    environment:
+      BROWSER: none
+      CHOKIDAR_USEPOLLING: "1"
+      NODE_EXTRA_CA_CERTS: /etc/ssl/certs/yts-proxy.crt
+      PUBLIC_BASE_URL: https://portal.yts.local
+      PUBLIC_KEYCLOAK_URL: https://sso.yts.local
+      WATCHPACK_POLLING: "true"
+    image: node:20-alpine
+    labels:
+      traefik.enable: "true"
+      traefik.http.routers.yts-adminui.entrypoints: websecure
+      traefik.http.routers.yts-adminui.rule: Host(`portal.yts.local`)
+      traefik.http.routers.yts-adminui.tls: "true"
+      traefik.http.services.yts-adminui.loadbalancer.passhostheader: "false"
+      traefik.http.services.yts-adminui.loadbalancer.server.port: "3001"
+    networks:
+      yts-core: null
+    restart: unless-stopped
+    volumes:
+      - type: bind
+        source: /opt/prod/trendsense/source/dtadmin-ui
+        target: /app
+        bind:
+          create_host_path: true
+      - type: bind
+        source: /opt/prod/trendsense/deploy/yts-stack/services/certs/server.crt
+        target: /etc/ssl/certs/yts-proxy.crt
+        read_only: true
+        bind:
+          create_host_path: true
+    working_dir: /app
+  yts-nessie:
+    container_name: yts-nessie
+    healthcheck:
+      test:
+        - CMD
+        - bash
+        - -lc
+        - curl -fsS http://127.0.0.1:19120/api/v1/config >/dev/null || wget -qO- http://127.0.0.1:19120/api/v1/config >/dev/null
+      timeout: 5s
+      interval: 10s
+      retries: 30
+      start_period: 20s
+    image: bitnami/nessie:0.104.10
+    labels:
+      traefik.enable: "true"
+      traefik.docker.network: yts-core
+      traefik.http.routers.yts-nessie.entrypoints: websecure
+      traefik.http.routers.yts-nessie.rule: Host(`nessie.yts.local`)
+      traefik.http.routers.yts-nessie.tls: "true"
+      traefik.http.services.yts-nessie.loadbalancer.server.port: "19120"
+    networks:
+      yts-core: null
+    restart: unless-stopped
+  yts-keycloak:
+    command:
+      - start-dev
+      - --http-port=8080
+    depends_on:
+      yts-pg:
+        condition: service_healthy
+        required: true
+    environment:
+      KC_DB: postgres
+      KC_DB_PASSWORD: Devops123456@
+      KC_DB_URL: jdbc:postgresql://yts-pg:5432/yts_keycloak
+      KC_DB_USERNAME: yts_keycloak
+      KC_FEATURES: scripts
+      KC_HOSTNAME: sso.yts.local
+      KC_HOSTNAME_PORT: "443"
+      KC_HOSTNAME_STRICT: "true"
+      KC_HOSTNAME_STRICT_HTTPS: "true"
+      KC_HOSTNAME_URL: https://sso.yts.local
+      KC_HTTP_ENABLED: "true"
+      KC_PROXY: edge
+      KEYCLOAK_ADMIN: admin
+      KEYCLOAK_ADMIN_PASSWORD: Devops123456@
+    healthcheck:
+      test:
+        - CMD
+        - bash
+        - -lc
+        - curl -fsS http://localhost:8080/realms/master/.well-known/openid-configuration >/dev/null
+      timeout: 5s
+      interval: 10s
+      retries: 30
+      start_period: 30s
+    image: quay.io/keycloak/keycloak:26.3.4
+    labels:
+      traefik.enable: "true"
+      traefik.http.routers.yts-kc.entrypoints: websecure
+      traefik.http.routers.yts-kc.rule: Host(`sso.yts.local`)
+      traefik.http.routers.yts-kc.tls: "true"
+      traefik.http.services.yts-kc.loadbalancer.server.port: "8080"
+    networks:
+      yts-core: null
+    restart: unless-stopped
+  yts-minio:
+    command:
+      - server
+      - /data
+      - --console-address
+      - :9001
+    environment:
+      MINIO_REGION_NAME: cn-local-1
+      MINIO_ROOT_PASSWORD: Devops123456@
+      MINIO_ROOT_USER: minio
+      MINIO_SERVER_URL: https://minio.yts.local
+    healthcheck:
+      test:
+        - CMD
+        - curl
+        - -fsS
+        - http://localhost:9000/minio/health/live
+      timeout: 5s
+      interval: 10s
+      retries: 30
+      start_period: 20s
+    image: quay.io/minio/minio:latest
+    labels:
+      traefik.enable: "true"
+      traefik.http.middlewares.yts-strip-s3.stripprefixregex.regex: /s3
+      traefik.http.routers.yts-minio-api.entrypoints: websecure
+      traefik.http.routers.yts-minio-api.middlewares: yts-strip-s3@docker
+      traefik.http.routers.yts-minio-api.rule: Host(`minio.yts.local`) && PathPrefix(`/s3`)
+      traefik.http.routers.yts-minio-api.service: yts-minio-api
+      traefik.http.routers.yts-minio-api.tls: "true"
+      traefik.http.routers.yts-minio-console.entrypoints: websecure
+      traefik.http.routers.yts-minio-console.rule: Host(`minio.yts.local`) && PathPrefix(`/`)
+      traefik.http.routers.yts-minio-console.service: yts-minio-console
+      traefik.http.routers.yts-minio-console.tls: "true"
+      traefik.http.services.yts-minio-api.loadbalancer.server.port: "9000"
+      traefik.http.services.yts-minio-console.loadbalancer.server.port: "9001"
+    networks:
+      yts-core: null
+    restart: unless-stopped
+    volumes:
+      - type: bind
+        source: /opt/prod/trendsense/deploy/yts-stack/services/yts-minio/data
+        target: /data
+        bind:
+          create_host_path: true
+  yts-minio-init:
+    depends_on:
+      yts-minio:
+        condition: service_healthy
+        required: true
+    entrypoint:
+      - /bin/sh
+      - -c
+      - /init.sh
+    environment:
+      MINIO_ROOT_PASSWORD: Devops123456@
+      MINIO_ROOT_USER: minio
+      S3_BUCKET: yts-lake
+    image: quay.io/minio/mc:latest
+    labels:
+      traefik.enable: "false"
+    networks:
+      yts-core: null
+    restart: "no"
+    volumes:
+      - type: bind
+        source: /opt/prod/trendsense/deploy/yts-stack/services/yts-minio-init/init/init.sh
+        target: /init.sh
+        read_only: true
+        bind:
+          create_host_path: true
+  yts-om-es:
+    environment:
+      ELASTIC_PASSWORD: Devops123456@
+      ELASTIC_USERNAME: elastic
+      discovery.type: single-node
+      xpack.security.enabled: "true"
+      xpack.security.http.ssl.certificate: /usr/share/elasticsearch/config/certs/http.crt
+      xpack.security.http.ssl.certificate_authorities: /usr/share/elasticsearch/config/certs/ca.crt
+      xpack.security.http.ssl.enabled: "true"
+      xpack.security.http.ssl.key: /usr/share/elasticsearch/config/certs/http.key
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - |-
+          URL="$${ELASTICSEARCH_SCHEME}://localhost:9200/_cluster/health"; set -- curl -fsS; if [ "$${ELASTICSEARCH_SECURITY_ENABLED}" = "true" ]; then
+            set -- "$$@" -u "$${ELASTICSEARCH_USERNAME}:$${ELASTIC_PASSWORD}"
+          fi; if [ "$${ELASTICSEARCH_HTTP_SSL_ENABLED}" = "true" ]; then
+            set -- "$$@" --cacert "$${ELASTICSEARCH_HTTP_SSL_CA}"
+          fi; set -- "$$@" "$${URL}"; "$$@" | grep -Eq '"status":"(yellow|green)"'
+      timeout: 5s
+      interval: 10s
+      retries: 30
+      start_period: 20s
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.19.4
+    networks:
+      yts-core: null
+    restart: unless-stopped
+    volumes:
+      - type: bind
+        source: /opt/prod/trendsense/deploy/yts-stack/services/yts-om-es/data
+        target: /usr/share/elasticsearch/data
+        bind:
+          create_host_path: true
+      - type: bind
+        source: /opt/prod/trendsense/deploy/yts-stack/services/yts-om-es/data/certs
+        target: /usr/share/elasticsearch/config/certs
+        read_only: true
+        bind:
+          create_host_path: true
+  yts-openmetadata-server:
+    depends_on:
+      yts-om-es:
+        condition: service_healthy
+        required: true
+      yts-pg:
+        condition: service_healthy
+        required: true
+    environment:
+      AUTHENTICATION_PROVIDER: basic
+      DB_CONN_PARAMS: sslmode=disable
+      DB_DATABASE: yts_openmetadata
+      DB_DRIVER: postgres
+      DB_HOST: yts-pg
+      DB_PASSWORD: Devops123456@
+      DB_PORT: "5432"
+      DB_USER: yts_openmetadata
+      ELASTICSEARCH_HOST: yts-om-es
+      ELASTICSEARCH_PASSWORD: Devops123456@
+      ELASTICSEARCH_PORT: "9200"
+      ELASTICSEARCH_SCHEME: https
+      ELASTICSEARCH_SSL_CERT: /opt/openmetadata/certs/ca.crt
+      ELASTICSEARCH_USER: elastic
+      ELASTICSEARCH_USERNAME: elastic
+      ELASTICSEARCH_VERIFY_CERTIFICATE: "true"
+      OPENMETADATA_CLUSTER_NAME: docker
+      OPENMETADATA_DATABASE_DB: yts_openmetadata
+      OPENMETADATA_DATABASE_DRIVER: postgres
+      OPENMETADATA_DATABASE_HOST: yts-pg
+      OPENMETADATA_DATABASE_PASSWORD: Devops123456@
+      OPENMETADATA_DATABASE_PORT: "5432"
+      OPENMETADATA_DATABASE_URL: jdbc:postgresql://yts-pg:5432/yts_openmetadata
+      OPENMETADATA_DATABASE_USER: yts_openmetadata
+      OPENMETADATA_DB_CONNECTION_URL: jdbc:postgresql://yts-pg:5432/yts_openmetadata
+    image: openmetadata/server:latest
+    labels:
+      traefik.enable: "true"
+      traefik.http.routers.yts-om.entrypoints: websecure
+      traefik.http.routers.yts-om.rule: Host(`meta.yts.local`)
+      traefik.http.routers.yts-om.tls: "true"
+      traefik.http.services.yts-om.loadbalancer.server.port: "8585"
+    networks:
+      yts-core: null
+    restart: unless-stopped
+    volumes:
+      - type: bind
+        source: /opt/prod/trendsense/deploy/yts-stack/services/yts-om-es/data/certs
+        target: /opt/openmetadata/certs
+        read_only: true
+        bind:
+          create_host_path: true
+  yts-pg:
+    environment:
+      PG_DB_AIRBYTE: yts_airbyte
+      PG_DB_KEYCLOAK: yts_keycloak
+      PG_DB_OM: yts_openmetadata
+      PG_DB_RANGER_AUDIT: yts_ranger_audit
+      PG_DB_TEMPORAL: yts_temporal
+      PG_DB_TEMPORAL_VISIBILITY: yts_temporal_visibility
+      PG_PWD_AIRBYTE: Devops123456@
+      PG_PWD_KEYCLOAK: Devops123456@
+      PG_PWD_OM: Devops123456@
+      PG_PWD_RANGER_AUDIT: Devops123456@
+      PG_PWD_TEMPORAL: Devops123456@
+      PG_USER_AIRBYTE: yts_airbyte
+      PG_USER_KEYCLOAK: yts_keycloak
+      PG_USER_OM: yts_openmetadata
+      PG_USER_RANGER_AUDIT: yts_ranger
+      PG_USER_TEMPORAL: yts_temporal
+      PGDATA: /var/lib/postgresql/data/pgdata
+      POSTGRES_PASSWORD: Devops123456@
+      POSTGRES_USER: postgres
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - /docker-entrypoint-initdb.d/99-ensure-users-runtime.sh
+      timeout: 5s
+      interval: 10s
+      retries: 30
+      start_period: 20s
+    image: postgres:17.6
+    networks:
+      yts-core: null
+    restart: unless-stopped
+    volumes:
+      - type: bind
+        source: /opt/prod/trendsense/deploy/yts-stack/services/yts-pg/data
+        target: /var/lib/postgresql/data
+        bind:
+          create_host_path: true
+      - type: bind
+        source: /opt/prod/trendsense/deploy/yts-stack/services/yts-pg/init
+        target: /docker-entrypoint-initdb.d
+        bind:
+          create_host_path: true
+  yts-proxy:
+    command:
+      - --api.dashboard=true
+      - --api.insecure=true
+      - --providers.docker=true
+      - --providers.docker.exposedbydefault=false
+      - --providers.file.filename=/etc/traefik/dynamic/traefik-dynamic.yml
+      - --entrypoints.web.address=:80
+      - --entrypoints.web.http.redirections.entrypoint.to=websecure
+      - --entrypoints.web.http.redirections.entrypoint.scheme=https
+      - --entrypoints.websecure.address=:443
+      - --ping=true
+      - --entrypoints.metrics.address=:9100
+      - --accesslog=true
+      - --serversTransport.insecureSkipVerify=true
+      - --log.level=INFO
+      - --metrics.prometheus=true
+      - --metrics.prometheus.entryPoint=metrics
+      - --metrics.prometheus.addEntryPointsLabels=true
+      - --metrics.prometheus.addServicesLabels=true
+    image: traefik:v3.5.2
+    labels:
+      traefik.enable: "true"
+      traefik.http.routers.default-secure.entrypoints: websecure
+      traefik.http.routers.default-secure.rule: HostRegexp(`{any:.*}`)
+      traefik.http.routers.default-secure.tls: "true"
+      traefik.tls.certificates[0].certFile: /certs/server.crt
+      traefik.tls.certificates[0].keyFile: /certs/server.key
+    networks:
+      yts-core: null
+    ports:
+      - mode: ingress
+        target: 443
+        published: "443"
+        protocol: tcp
+      - mode: ingress
+        host_ip: 127.0.0.1
+        target: 8080
+        published: "8080"
+        protocol: tcp
+      - mode: ingress
+        host_ip: 127.0.0.1
+        target: 9100
+        published: "9100"
+        protocol: tcp
+    restart: unless-stopped
+    volumes:
+      - type: bind
+        source: /var/run/docker.sock
+        target: /var/run/docker.sock
+        read_only: true
+        bind:
+          create_host_path: true
+      - type: bind
+        source: /opt/prod/trendsense/deploy/yts-stack/services/yts-proxy/dynamic
+        target: /etc/traefik/dynamic
+        read_only: true
+        bind:
+          create_host_path: true
+      - type: bind
+        source: /opt/prod/trendsense/deploy/yts-stack/services/certs
+        target: /etc/traefik/certs
+        read_only: true
+        bind:
+          create_host_path: true
+      - type: bind
+        source: /opt/prod/trendsense/deploy/yts-stack/services/certs/server.crt
+        target: /certs/server.crt
+        read_only: true
+        bind:
+          create_host_path: true
+      - type: bind
+        source: /opt/prod/trendsense/deploy/yts-stack/services/certs/server.key
+        target: /certs/server.key
+        read_only: true
+        bind:
+          create_host_path: true
+  yts-ranger-admin:
+    depends_on:
+      yts-pg:
+        condition: service_healthy
+        required: true
+    environment:
+      BITNAMI_DEBUG: "false"
+      RANGER_ADMIN_PASSWORD: Devops123456@
+      RANGER_ADMIN_USER: admin
+      RANGER_ADMIN_USERNAME: admin
+      RANGER_AUDIT_DATABASE_HOST: yts-pg
+      RANGER_AUDIT_DATABASE_NAME: yts_ranger_audit
+      RANGER_AUDIT_DATABASE_PASSWORD: Devops123456@
+      RANGER_AUDIT_DATABASE_PORT_NUMBER: "5432"
+      RANGER_AUDIT_DATABASE_TYPE: postgresql
+      RANGER_AUDIT_DATABASE_USER: yts_ranger
+      RANGER_AUDIT_SOLR_ENABLED: "no"
+      RANGER_DATABASE_HOST: yts-pg
+      RANGER_DATABASE_NAME: yts_ranger
+      RANGER_DATABASE_PASSWORD: Devops123456@
+      RANGER_DATABASE_PORT_NUMBER: "5432"
+      RANGER_DATABASE_TYPE: postgresql
+      RANGER_DATABASE_USER: yts_ranger
+      RANGER_USERSYNC_PASSWORD: Devops123456@
+    healthcheck:
+      test:
+        - CMD
+        - curl
+        - -fsS
+        - http://localhost:6080/
+      timeout: 5s
+      interval: 15s
+      retries: 30
+      start_period: 1m0s
+    image: apache/ranger:2.7.0
+    labels:
+      traefik.enable: "true"
+      traefik.http.routers.yts-ranger.entrypoints: websecure
+      traefik.http.routers.yts-ranger.rule: Host(`ranger.yts.local`)
+      traefik.http.routers.yts-ranger.tls: "true"
+      traefik.http.services.yts-ranger.loadbalancer.server.port: "6080"
+    networks:
+      yts-core: null
+    restart: unless-stopped
+    volumes:
+      - type: bind
+        source: /opt/prod/trendsense/deploy/yts-stack/services/yts-ranger/admin/data
+        target: /bitnami/ranger/data
+        bind:
+          create_host_path: true
+      - type: bind
+        source: /opt/prod/trendsense/deploy/yts-stack/services/yts-ranger/admin/logs
+        target: /bitnami/ranger/logs
+        bind:
+          create_host_path: true
+  yts-trino:
+    depends_on:
+      yts-nessie:
+        condition: service_healthy
+        required: true
+      yts-minio:
+        condition: service_started
+        required: true
+    healthcheck:
+      test:
+        - CMD
+        - wget
+        - -qO-
+        - http://localhost:8080/v1/info
+      timeout: 5s
+      interval: 10s
+      retries: 30
+      start_period: 20s
+    image: trinodb/trino:latest
+    labels:
+      traefik.enable: "true"
+      traefik.http.routers.yts-trino.entrypoints: websecure
+      traefik.http.routers.yts-trino.rule: Host(`trino.yts.local`)
+      traefik.http.routers.yts-trino.tls: "true"
+      traefik.http.services.yts-trino.loadbalancer.server.port: "8080"
+    networks:
+      yts-core: null
+    restart: unless-stopped
+    volumes:
+      - type: bind
+        source: /opt/prod/trendsense/deploy/yts-stack/services/yts-trino/init/catalog
+        target: /etc/trino/catalog
+        bind:
+          create_host_path: true
+networks:
+  yts-core:
+    name: yts-stack_yts-core
+    driver: bridge
+volumes:
+  gradle-cache:
+    name: yts-stack_gradle-cache
+x-hc:
+  interval: 10s
+  retries: 30
+  start_period: 20s
+  timeout: 5s

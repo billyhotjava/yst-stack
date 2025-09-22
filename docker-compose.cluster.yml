@@ -11,23 +11,32 @@ services:
     image: ${IMAGE_TRAEFIK}
     command:
       - "--api.dashboard=false"
-      - "--entrypoints.websecure.address=:443"
+      - "--api.insecure=false"
       - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--providers.file.filename=/etc/traefik/dynamic/traefik-dynamic.yml"
+      - "--entrypoints.web.address=:80"
+      - "--entrypoints.web.http.redirections.entrypoint.to=websecure"
+      - "--entrypoints.web.http.redirections.entrypoint.scheme=https"
+      - "--entrypoints.websecure.address=:443"
+      - "--accesslog=true"
       - "--serversTransport.insecureSkipVerify=true"
       - "--log.level=INFO"
     ports:
       - "${TLS_PORT}:443"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
-      - ./services/yts-proxy/data/certs/server.crt:/certs/server.crt:ro
-      - ./services/yts-proxy/data/certs/server.key:/certs/server.key:ro
+      - ./services/yts-proxy/dynamic:/etc/traefik/dynamic:ro
+      - ./services/certs:/etc/traefik/certs:ro
+      - ./services/certs/server.crt:/certs/server.crt:ro
+      - ./services/certs/server.key:/certs/server.key:ro
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.default-secure.tls=true"
       - "traefik.http.routers.default-secure.entrypoints=websecure"
       - "traefik.http.routers.default-secure.rule=HostRegexp(`{any:.*}`)"
-      - "traefik.http.tls.certificates[0].certFile=/certs/server.crt"
-      - "traefik.http.tls.certificates[0].keyFile=/certs/server.key"
+      - "traefik.tls.certificates[0].certFile=/certs/server.crt"
+      - "traefik.tls.certificates[0].keyFile=/certs/server.key"
     restart: unless-stopped
 
   yts-keycloak:
@@ -85,22 +94,15 @@ services:
     volumes:
       - ./services/yts-minio-init/init/init.sh:/init.sh:ro
     restart: "no"
-
-  yts-metastore:
-    image: ${IMAGE_HIVE}
-    depends_on:
+    labels:
+      - "traefik.enable=false"
   yts-trino:
     image: ${IMAGE_TRINO}
     depends_on:
-      yts-metastore:
-        condition: service_started
       yts-minio:
         condition: service_started
     volumes:
       - ./services/yts-trino/init/catalog:/etc/trino/catalog
-    environment:
-      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
     healthcheck:
       test: ["CMD","wget","-qO-","http://localhost:8080/v1/info"]
       <<: *hc
@@ -111,6 +113,65 @@ services:
       - "traefik.http.routers.yts-trino.tls=true"
       - "traefik.http.services.yts-trino.loadbalancer.server.port=8080"
     restart: unless-stopped
+
+  yts-ranger-admin:
+    image: ${IMAGE_RANGER_ADMIN}
+    environment:
+      RANGER_ADMIN_USER: ${RANGER_ADMIN_USER}
+      RANGER_ADMIN_USERNAME: ${RANGER_ADMIN_USER}
+      RANGER_ADMIN_PASSWORD: ${RANGER_ADMIN_PASSWORD}
+      RANGER_DATABASE_TYPE: postgresql
+      RANGER_DATABASE_HOST: ${PG_HOST}
+      RANGER_DATABASE_PORT_NUMBER: ${PG_PORT}
+      RANGER_DATABASE_NAME: ${PG_DB_RANGER}
+      RANGER_DATABASE_USER: ${PG_USER_RANGER}
+      RANGER_DATABASE_PASSWORD: ${PG_PWD_RANGER}
+      RANGER_AUDIT_DATABASE_TYPE: postgresql
+      RANGER_AUDIT_DATABASE_HOST: ${PG_HOST}
+      RANGER_AUDIT_DATABASE_PORT_NUMBER: ${PG_PORT}
+      RANGER_AUDIT_DATABASE_NAME: ${PG_DB_RANGER_AUDIT}
+      RANGER_AUDIT_DATABASE_USER: ${PG_USER_RANGER_AUDIT}
+      RANGER_AUDIT_DATABASE_PASSWORD: ${PG_PWD_RANGER_AUDIT}
+      RANGER_USERSYNC_PASSWORD: ${RANGER_ADMIN_PASSWORD}
+      RANGER_AUDIT_SOLR_ENABLED: "no"
+      BITNAMI_DEBUG: "false"
+    volumes:
+      - ./services/yts-ranger/admin/data:/bitnami/ranger/data
+      - ./services/yts-ranger/admin/logs:/bitnami/ranger/logs
+    healthcheck:
+      test: ["CMD","curl","-fsS","http://localhost:6080/"]
+      interval: 15s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.yts-ranger.rule=Host(`${HOST_RANGER}`)"
+      - "traefik.http.routers.yts-ranger.entrypoints=websecure"
+      - "traefik.http.routers.yts-ranger.tls=true"
+      - "traefik.http.services.yts-ranger.loadbalancer.server.port=6080"
+    restart: unless-stopped
+
+  yts-airbyte-bootloader:
+    image: ${IMAGE_AIRBYTE_BOOTLOADER}
+    environment:
+      AIRBYTE_ROLE: bootloader
+      AIRBYTE_VERSION: ${AIRBYTE_VERSION}
+      AIRBYTE_WORKER_ENVIRONMENT: ${AIRBYTE_WORKER_ENVIRONMENT}
+      AIRBYTE_JOBS_KUBE_NAMESPACE: ${AIRBYTE_JOBS_KUBE_NAMESPACE}
+      DATABASE_URL: jdbc:postgresql://${PG_HOST}:${PG_PORT}/${PG_DB_AIRBYTE}?sslmode=disable
+      DATABASE_USER: ${PG_USER_AIRBYTE}
+      DATABASE_PASSWORD: ${PG_PWD_AIRBYTE}
+      CONFIG_DATABASE_URL: jdbc:postgresql://${PG_HOST}:${PG_PORT}/${PG_DB_AIRBYTE}
+      CONFIG_DATABASE_USER: ${PG_USER_AIRBYTE}
+      CONFIG_DATABASE_PASSWORD: ${PG_PWD_AIRBYTE}
+      JOB_DATABASE_URL: jdbc:postgresql://${PG_HOST}:${PG_PORT}/${PG_DB_AIRBYTE_JOBS}
+      JOB_DATABASE_USER: ${PG_USER_AIRBYTE_JOBS}
+      JOB_DATABASE_PASSWORD: ${PG_PWD_AIRBYTE_JOBS}
+      RUN_DATABASE_MIGRATION: "true"
+      RUN_CONFIG_DATABASE_MIGRATION: "true"
+      RUN_JOB_DATABASE_MIGRATION: "true"
+    restart: "no"
 
   yts-airbyte-server:
     image: ${IMAGE_AIRBYTE_SERVER}
@@ -136,10 +197,42 @@ services:
       AIRBYTE_CLOUD_STORAGE_S3_REGION: ${S3_REGION}
       AIRBYTE_CLOUD_STORAGE_S3_ENDPOINT: http://yts-minio:9000
       AIRBYTE_CLOUD_STORAGE_S3_PATH_STYLE_ACCESS: "true"
-      AIRBYTE_SECRET_PERSISTENCE: database
+      AIRBYTE_SECRET_PERSISTENCE: ${AIRBYTE_SECRET_PERSISTENCE}
+      MICRONAUT_ENVIRONMENTS: ${AIRBYTE_MICRONAUT_ENVIRONMENTS}
+      AIRBYTE_CONNECTOR_REGISTRY_ENTERPRISE_ENTERPRISE_SOURCE_STUBS_URL: ${AIRBYTE_ENTERPRISE_SOURCE_STUBS_URL}
+      AIRBYTE_CONNECTOR_REGISTRY_ENTERPRISE_ENTERPRISE_DESTINATION_STUBS_URL: ${AIRBYTE_ENTERPRISE_DESTINATION_STUBS_URL}
+      AIRBYTE_FLYWAY_CONFIGS_MINIMUM_MIGRATION_VERSION: ${AIRBYTE_FLYWAY_CONFIGS_MINIMUM_MIGRATION_VERSION}
+      AIRBYTE_FLYWAY_JOBS_MINIMUM_MIGRATION_VERSION: ${AIRBYTE_FLYWAY_JOBS_MINIMUM_MIGRATION_VERSION}
+      CONFIG_DATABASE_URL: jdbc:postgresql://${PG_HOST}:${PG_PORT}/${PG_DB_AIRBYTE}
+      CONFIG_DATABASE_USER: ${PG_USER_AIRBYTE}
+      CONFIG_DATABASE_PASSWORD: ${PG_PWD_AIRBYTE}
+      JOB_DATABASE_URL: jdbc:postgresql://${PG_HOST}:${PG_PORT}/${PG_DB_AIRBYTE_JOBS}
+      JOB_DATABASE_USER: ${PG_USER_AIRBYTE_JOBS}
+      JOB_DATABASE_PASSWORD: ${PG_PWD_AIRBYTE_JOBS}
+      RUN_DATABASE_MIGRATION_ON_STARTUP: "true"
+      AIRBYTE_VERSION: ${AIRBYTE_VERSION}
+      AIRBYTE_WORKER_ENVIRONMENT: ${AIRBYTE_WORKER_ENVIRONMENT}
+      AIRBYTE_JOBS_KUBE_NAMESPACE: ${AIRBYTE_JOBS_KUBE_NAMESPACE}
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.yts-airbyte-ui.rule=Host(`${HOST_AIRBYTE}`)"
+      - "traefik.http.routers.yts-airbyte-ui.entrypoints=websecure"
+      - "traefik.http.routers.yts-airbyte-ui.service=yts-airbyte-ui"
+      - "traefik.http.routers.yts-airbyte-ui.tls=true"
+      - "traefik.http.services.yts-airbyte-ui.loadbalancer.server.port=8001"
+      - "traefik.http.routers.yts-airbyte-api.rule=Host(`${HOST_AIRBYTE}`) && PathPrefix(`/api`)"
+      - "traefik.http.routers.yts-airbyte-api.entrypoints=websecure"
+      - "traefik.http.routers.yts-airbyte-api.service=yts-airbyte-api"
+      - "traefik.http.routers.yts-airbyte-api.tls=true"
+      - "traefik.http.services.yts-airbyte-api.loadbalancer.server.port=8001"
     volumes:
       - ./services/yts-airbyte-server/data/workspace:/data/airbyte/workspace
     depends_on:
+      yts-airbyte-bootloader:
+        condition: service_completed_successfully
+      yts-airbyte-temporal:
+        condition: service_started
+
   yts-airbyte-worker:
     image: ${IMAGE_AIRBYTE_WORKER}
     environment:
@@ -163,12 +256,120 @@ services:
       AIRBYTE_CLOUD_STORAGE_S3_REGION: ${S3_REGION}
       AIRBYTE_CLOUD_STORAGE_S3_ENDPOINT: http://yts-minio:9000
       AIRBYTE_CLOUD_STORAGE_S3_PATH_STYLE_ACCESS: "true"
-      AIRBYTE_SECRET_PERSISTENCE: database
+      AIRBYTE_SECRET_PERSISTENCE: ${AIRBYTE_SECRET_PERSISTENCE}
+      MICRONAUT_ENVIRONMENTS: ${AIRBYTE_MICRONAUT_ENVIRONMENTS}
+      AIRBYTE_CONNECTOR_REGISTRY_ENTERPRISE_ENTERPRISE_SOURCE_STUBS_URL: ${AIRBYTE_ENTERPRISE_SOURCE_STUBS_URL}
+      AIRBYTE_CONNECTOR_REGISTRY_ENTERPRISE_ENTERPRISE_DESTINATION_STUBS_URL: ${AIRBYTE_ENTERPRISE_DESTINATION_STUBS_URL}
+      AIRBYTE_FLYWAY_CONFIGS_MINIMUM_MIGRATION_VERSION: ${AIRBYTE_FLYWAY_CONFIGS_MINIMUM_MIGRATION_VERSION}
+      AIRBYTE_FLYWAY_JOBS_MINIMUM_MIGRATION_VERSION: ${AIRBYTE_FLYWAY_JOBS_MINIMUM_MIGRATION_VERSION}
+      CONFIG_DATABASE_URL: jdbc:postgresql://${PG_HOST}:${PG_PORT}/${PG_DB_AIRBYTE}
+      CONFIG_DATABASE_USER: ${PG_USER_AIRBYTE}
+      CONFIG_DATABASE_PASSWORD: ${PG_PWD_AIRBYTE}
+      JOB_DATABASE_URL: jdbc:postgresql://${PG_HOST}:${PG_PORT}/${PG_DB_AIRBYTE_JOBS}
+      JOB_DATABASE_USER: ${PG_USER_AIRBYTE_JOBS}
+      JOB_DATABASE_PASSWORD: ${PG_PWD_AIRBYTE_JOBS}
+      AIRBYTE_VERSION: ${AIRBYTE_VERSION}
+      AIRBYTE_WORKER_ENVIRONMENT: ${AIRBYTE_WORKER_ENVIRONMENT}
+      AIRBYTE_JOBS_KUBE_NAMESPACE: ${AIRBYTE_JOBS_KUBE_NAMESPACE}
     volumes:
       - ./services/yts-airbyte-server/data/workspace:/data/airbyte/workspace
     depends_on:
       yts-airbyte-server:
         condition: service_started
+  yts-dbt:
+    image: ${IMAGE_DBT}
+    environment:
+      DBT_PROFILES_DIR: /dbt/profiles
+      DBT_PROJECT_DIR: /dbt/project
+      DBT_TARGET: dev
+      DBT_RPC_HOST: 0.0.0.0
+      DBT_RPC_PORT: ${DBT_RPC_PORT}
+      DBT_TRINO_HOST: ${DBT_TRINO_HOST}
+      DBT_TRINO_PORT: ${DBT_TRINO_PORT}
+      DBT_TRINO_CATALOG: ${DBT_TRINO_CATALOG}
+      DBT_TRINO_SCHEMA: ${DBT_TRINO_SCHEMA}
+      DBT_TRINO_USER: ${DBT_TRINO_USER}
+      DBT_TRINO_PASSWORD: ${DBT_TRINO_PASSWORD}
+      DBT_TRINO_HTTP_SCHEME: ${DBT_TRINO_HTTP_SCHEME}
+    command:
+      - dbt
+      - rpc
+      - --host
+      - 0.0.0.0
+      - --port
+      - ${DBT_RPC_PORT}
+      - --profiles-dir
+      - /dbt/profiles
+      - --project-dir
+      - /dbt/project
+    volumes:
+      - ./services/yts-dbt/project:/dbt/project
+      - ./services/yts-dbt/profiles:/dbt/profiles:ro
+      - ./services/yts-dbt/logs:/root/.dbt/logs
+    depends_on:
+      yts-trino:
+        condition: service_started
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.yts-dbt.rule=Host(`${HOST_DBT}`)"
+      - "traefik.http.routers.yts-dbt.entrypoints=websecure"
+      - "traefik.http.routers.yts-dbt.tls=true"
+      - "traefik.http.services.yts-dbt.loadbalancer.server.port=${DBT_RPC_PORT}"
+    restart: unless-stopped
+  yts-doris-fe:
+    image: ${IMAGE_DORIS_FE}
+    hostname: yts-doris-fe
+    environment:
+      FE_SERVERS: yts-doris-fe:${DORIS_FE_EDIT_LOG_PORT}
+      FE_ID: 1
+      FE_RPC_PORT: ${DORIS_FE_RPC_PORT}
+      FE_EDIT_LOG_PORT: ${DORIS_FE_EDIT_LOG_PORT}
+      FE_QUERY_PORT: ${DORIS_FE_QUERY_PORT}
+      FE_MYSQL_PORT: ${DORIS_MYSQL_PORT}
+    volumes:
+      - ./services/yts-doris/fe/meta:/opt/apache-doris/fe/doris-meta
+      - ./services/yts-doris/fe/log:/opt/apache-doris/fe/log
+    healthcheck:
+      test: ["CMD","curl","-fsS","http://localhost:${DORIS_HTTP_PORT}"]
+      <<: *hc
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.yts-doris.rule=Host(`${HOST_DORIS}`)"
+      - "traefik.http.routers.yts-doris.entrypoints=websecure"
+      - "traefik.http.routers.yts-doris.tls=true"
+      - "traefik.http.services.yts-doris.loadbalancer.server.port=${DORIS_HTTP_PORT}"
+    restart: unless-stopped
+
+  yts-doris-be:
+    image: ${IMAGE_DORIS_BE}
+    hostname: yts-doris-be
+    environment:
+      FE_SERVERS: yts-doris-fe:${DORIS_FE_EDIT_LOG_PORT}
+      BE_ADDR: yts-doris-be:${DORIS_BE_HEARTBEAT_PORT}
+      BE_HEARTBEAT_PORT: ${DORIS_BE_HEARTBEAT_PORT}
+      BE_BRPC_PORT: ${DORIS_BE_BRPC_PORT}
+      BE_WEB_PORT: ${DORIS_BE_WEB_PORT}
+    volumes:
+      - ./services/yts-doris/be/storage:/opt/apache-doris/be/storage
+      - ./services/yts-doris/be/log:/opt/apache-doris/be/log
+    depends_on:
+      yts-doris-fe:
+        condition: service_started
+      test: ["CMD","curl","-fsS","http://localhost:${DORIS_BE_WEB_PORT}"]
+      <<: *hc
+    restart: unless-stopped
+
+  yts-doris-broker:
+    image: ${IMAGE_DORIS_BROKER}
+    hostname: yts-doris-broker
+    environment:
+      FE_SERVERS: yts-doris-fe:${DORIS_FE_EDIT_LOG_PORT}
+      BROKER_ADDR: yts-doris-broker:${DORIS_BROKER_PORT}
+    depends_on:
+      yts-doris-fe:
+        condition: service_started
+    restart: unless-stopped
+
   yts-airbyte-temporal:
     image: ${IMAGE_TEMPORAL}
     environment:
@@ -177,6 +378,13 @@ services:
       DBNAME: ${PG_DB_TEMPORAL}
       VISIBILITY_DBNAME: ${PG_DB_TEMPORAL_VISIBILITY}
       SKIP_DB_CREATE: "true"
+      SQL_HOST: ${PG_HOST}
+      SQL_PORT: ${PG_PORT}
+      SQL_USER: ${PG_USER_TEMPORAL}
+      SQL_PASSWORD: ${PG_PWD_TEMPORAL}
+      SQL_DATABASE: ${PG_DB_TEMPORAL}
+      SQL_VISIBILITY_DATABASE: ${PG_DB_TEMPORAL_VISIBILITY}
+      SQL_TLS_ENABLED: "false"
       POSTGRES_USER: ${PG_USER_TEMPORAL}
       POSTGRES_PWD: ${PG_PWD_TEMPORAL}
       POSTGRES_SEEDS: ${PG_HOST}

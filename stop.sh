@@ -29,8 +29,8 @@ case "$MODE" in
     COMPOSE_FILE="docker-compose.cluster.yml"
     ;;
   *)
-    echo "[start.sh] Unknown mode '${MODE}'." >&2
-    echo "Usage: $0 [single|ha2|cluster] [service ...]" >&2
+    echo "[stop.sh] Unknown mode '${MODE}'." >&2
+    echo "Usage: $0 [single|ha2|cluster] [docker compose down options]" >&2
     exit 1
     ;;
 esac
@@ -40,9 +40,14 @@ if docker compose version >/dev/null 2>&1; then
 elif command -v docker-compose >/dev/null 2>&1; then
   compose_cmd=(docker-compose)
 else
-  echo "[start.sh] docker compose not found." >&2
+  echo "[stop.sh] docker compose not found." >&2
   exit 1
 fi
 
-echo "[start.sh] Using ${COMPOSE_FILE} (mode: ${MODE})."
-"${compose_cmd[@]}" -f "${COMPOSE_FILE}" up -d "$@"
+extra_args=("$@")
+if [[ ${#extra_args[@]} -eq 0 ]]; then
+  extra_args=(--remove-orphans)
+fi
+
+echo "[stop.sh] Using ${COMPOSE_FILE} (mode: ${MODE})."
+"${compose_cmd[@]}" -f "${COMPOSE_FILE}" down "${extra_args[@]}"
